@@ -205,7 +205,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var effectiveCookies = cookies ?? [];
         _httpClient?.Dispose();
         _httpClient = new HanimeHttpClientFactory().Create(effectiveCookies, _settings.SiteHost, browserVersion);
-        _apiClient = new HanimeApiClient(_cloudflareWindow, _settings.SiteHost);
+        _apiClient = new HanimeApiClient(_cloudflareWindow, _httpClient, _settings.SiteHost);
         _downloadService = new DownloadService(_httpClient, _settings.SiteHost);
     }
 
@@ -254,7 +254,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         await SaveCookieCacheAsync();
         _httpClient?.Dispose();
         _httpClient = new HanimeHttpClientFactory().Create(_appState.Cookies, _settings.SiteHost, _appState.BrowserVersion);
-        _apiClient = new HanimeApiClient(_cloudflareWindow, _settings.SiteHost);
+        _apiClient = new HanimeApiClient(_cloudflareWindow, _httpClient, _settings.SiteHost);
         _downloadService = new DownloadService(_httpClient, _settings.SiteHost);
         _videoDetailsCache.Clear();
         _videoDetailsInFlight.Clear();
@@ -2131,7 +2131,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             InitSessionWithoutCf();
         }
 
-        var details = await GetOrLoadVideoDetailsAsync(summary.VideoId, VideoDetailsLoadOptions.All);
+        var details = await GetOrLoadVideoDetailsAsync(summary.VideoId, GetActiveVideoDetailsLoadOptions());
         if (details is null)
         {
             StatusText.Text = "读取详情失败。";
@@ -2192,7 +2192,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Width = 64,
             Height = 24,
             Content = "查看封面",
-            IsEnabled = !string.IsNullOrWhiteSpace(details.CoverUrl)
+            IsEnabled = !string.IsNullOrWhiteSpace(details.CoverUrl),
+            Visibility = _settings.VideoDetailsVisibility.Cover ? Visibility.Visible : Visibility.Collapsed
         };
         coverButton.Click += async (_, _) =>
         {
@@ -2227,20 +2228,45 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
         };
 
+        var visibility = _settings.VideoDetailsVisibility;
+        var visibleRows = new List<(string Label, string Value)>();
+        if (visibility.Title)
+        {
+            visibleRows.Add(("标题", titleText));
+        }
+        if (visibility.UploadDate)
+        {
+            visibleRows.Add(("上传时间", uploadDateText));
+        }
+        if (visibility.Likes)
+        {
+            visibleRows.Add(("点赞", likesText));
+        }
+        if (visibility.Views)
+        {
+            visibleRows.Add(("观看", viewsText));
+        }
+        if (visibility.Duration)
+        {
+            visibleRows.Add(("时长", durationText));
+        }
+        if (visibility.Tags)
+        {
+            visibleRows.Add(("标签", tagsText));
+        }
+        if (visibleRows.Count == 0)
+        {
+            visibleRows.Add(("提示", "当前设置未启用详情字段"));
+        }
+
         var infoGrid = new Grid();
         infoGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(72) });
         infoGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        for (var i = 0; i < 6; i++)
+        for (var i = 0; i < visibleRows.Count; i++)
         {
             infoGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            AddDetailRow(infoGrid, i, visibleRows[i].Label, visibleRows[i].Value);
         }
-
-        AddDetailRow(infoGrid, 0, "标题", titleText);
-        AddDetailRow(infoGrid, 1, "上传时间", uploadDateText);
-        AddDetailRow(infoGrid, 2, "点赞", likesText);
-        AddDetailRow(infoGrid, 3, "观看", viewsText);
-        AddDetailRow(infoGrid, 4, "时长", durationText);
-        AddDetailRow(infoGrid, 5, "标签", tagsText);
         scrollViewer.Content = infoGrid;
         infoBorder.Child = scrollViewer;
         root.Children.Add(infoBorder);
@@ -3271,10 +3297,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             videoId = _currentDetailsVideoId;
         }
 
-        var targetPath = queueItem is not null && !string.IsNullOrWhiteSpace(queueItem.TargetPath)
-            ? queueItem.TargetPath
-            : CreateQueueTargetPath(title, source.Type, videoId, source.Quality);
-        if (queueItem is not null && string.IsNullOrWhiteSpace(queueItem.TargetPath))
+        var targetPath = CreateQueueTargetPath(title, source.Type, videoId, source.Quality);
+        if (queueItem is not null && !string.IsNullOrWhiteSpace(queueItem.TargetPath))
+        {
+            try
+            {
+                targetPath = DownloadPathGuard.EnsureWithinDirectory(downloadDirectory, queueItem.TargetPath);
+            }
+            catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException)
+            {
+                LogInfo("download", $"队列目标路径不在下载目录内，已重新生成: {queueItem.TargetPath}; {ex.Message}");
+            }
+        }
+        if (queueItem is not null && !string.Equals(queueItem.TargetPath, targetPath, StringComparison.OrdinalIgnoreCase))
         {
             queueItem.TargetPath = targetPath;
         }
@@ -3307,8 +3342,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 _queueRunCurrentProgress = 0;
                 UpdateQueueRuntimeSummaryUi();
             }
-            await downloadService.ProbeAsync(source.Url, cancellationToken);
-
             if (queueItem is not null)
             {
                 SetQueueItemVisualState(queueItem, DownloadQueueState.Downloading, "下载", "准备下载", showProgress: true, progressValue: 0);
@@ -3658,27 +3691,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private VideoDetailsLoadOptions GetActiveVideoDetailsLoadOptions()
     {
-        var options = VideoDetailsLoadOptions.Basic | VideoDetailsLoadOptions.Sources;
-        if (_settings.VideoDetailsVisibility.Cover)
-        {
-            options |= VideoDetailsLoadOptions.Cover;
-        }
-        if (_settings.VideoDetailsVisibility.UploadDate ||
-            _settings.VideoDetailsVisibility.Likes ||
-            _settings.VideoDetailsVisibility.Views ||
-            _settings.VideoDetailsVisibility.Duration)
-        {
-            options |= VideoDetailsLoadOptions.Meta;
-        }
-        if (_settings.VideoDetailsVisibility.Tags)
-        {
-            options |= VideoDetailsLoadOptions.Tags;
-        }
-        if (_settings.VideoDetailsVisibility.RelatedVideos)
-        {
-            options |= VideoDetailsLoadOptions.RelatedVideos;
-        }
-        return options;
+        return VideoDetailsLoadPolicy.ForVisibility(_settings.VideoDetailsVisibility);
     }
 
     private async Task<VideoDetails?> GetOrLoadVideoDetailsAsync(string videoId, VideoDetailsLoadOptions? requestedLoadOptions = null, CancellationToken cancellationToken = default, bool forceRefresh = false)
@@ -3694,14 +3707,31 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (forceRefresh)
         {
-            _videoDetailsCache.Remove(cacheKey);
-            _videoDetailsInFlight.Remove(cacheKey);
+            foreach (var key in _videoDetailsCache.Keys.Where(key => key.StartsWith($"{videoId}:", StringComparison.OrdinalIgnoreCase)).ToList())
+            {
+                _videoDetailsCache.Remove(key);
+            }
+
+            foreach (var key in _videoDetailsInFlight.Keys.Where(key => key.StartsWith($"{videoId}:", StringComparison.OrdinalIgnoreCase)).ToList())
+            {
+                _videoDetailsInFlight.Remove(key);
+            }
         }
 
         if (_videoDetailsCache.TryGetValue(cacheKey, out var cached))
         {
             LogInfoThrottled("details", $"[details-cache] 命中详情缓存: {cacheKey}", TimeSpan.FromSeconds(3));
             return cached;
+        }
+
+        var cachedSuperset = _videoDetailsCache
+            .Where(pair => pair.Key.StartsWith($"{videoId}:", StringComparison.OrdinalIgnoreCase))
+            .Select(pair => pair.Value)
+            .FirstOrDefault(details => (details.LoadOptions & loadOptions) == loadOptions);
+        if (cachedSuperset is not null)
+        {
+            LogInfoThrottled("details", $"[details-cache-superset] 复用详情缓存: {videoId} / {loadOptions}", TimeSpan.FromSeconds(3));
+            return cachedSuperset;
         }
 
         if (_videoDetailsInFlight.TryGetValue(cacheKey, out var existingTask))
@@ -4037,25 +4067,26 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private static void DeleteQueueItemTemporaryFile(DownloadQueueItem item)
+    private void DeleteQueueItemTemporaryFile(DownloadQueueItem item)
     {
         if (string.IsNullOrWhiteSpace(item.TargetPath))
         {
             return;
         }
 
-        var temporaryPath = item.TargetPath + ".tmp";
-        if (!File.Exists(temporaryPath))
-        {
-            return;
-        }
-
         try
         {
-            File.Delete(temporaryPath);
+            var directory = EnsureDownloadDirectory();
+            var targetPath = DownloadPathGuard.EnsureWithinDirectory(directory, item.TargetPath);
+            var temporaryPath = targetPath + ".tmp";
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
         }
-        catch
+        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException)
         {
+            LogInfo("download", $"忽略队列临时文件清理: {ex.Message}");
         }
     }
 
@@ -4300,7 +4331,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 InitSessionWithoutCf();
             }
 
-            var details = await GetOrLoadVideoDetailsAsync(summary.VideoId, VideoDetailsLoadOptions.All);
+            var details = await GetOrLoadVideoDetailsAsync(summary.VideoId, GetActiveVideoDetailsLoadOptions());
             if (details is null)
             {
                 StatusText.Text = "读取详情失败。";
@@ -4625,18 +4656,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private static string GetDownloadTargetPath(string directory, string fileName)
     {
         var candidatePath = Path.Combine(directory, fileName);
-        if (File.Exists(candidatePath + ".tmp"))
-        {
-            return candidatePath;
-        }
-
-        if (!File.Exists(candidatePath))
-        {
-            return candidatePath;
-        }
-
-        // file exists and is complete — return it so caller can skip
-        return candidatePath;
+        return DownloadPathGuard.EnsureWithinDirectory(directory, candidatePath);
     }
 
     private string EnsureDownloadDirectory()
@@ -4644,8 +4664,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var directory = string.IsNullOrWhiteSpace(_settings.DownloadPath)
             ? Path.Combine(AppContext.BaseDirectory, "downloads")
             : _settings.DownloadPath;
-        Directory.CreateDirectory(directory);
-        return directory;
+        return DownloadPathGuard.NormalizeDirectory(directory);
     }
 
     private string BuildSuggestedFileName(string? title, string extension, string? videoId = null, int quality = 0)
@@ -4667,9 +4686,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private static string SanitizeFileName(string title)
     {
-        var invalidChars = Path.GetInvalidFileNameChars();
-        var cleaned = new string(title.Select(ch => invalidChars.Contains(ch) ? '_' : ch).ToArray()).Trim();
-        return string.IsNullOrWhiteSpace(cleaned) ? $"hanime_{DateTime.Now:yyyyMMdd_HHmmss}" : cleaned;
+        return DownloadPathGuard.SanitizeFileName(title, $"hanime_{DateTime.Now:yyyyMMdd_HHmmss}");
     }
 
     private sealed class FavoriteVideoRecord

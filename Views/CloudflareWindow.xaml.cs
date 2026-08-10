@@ -118,7 +118,7 @@ public partial class CloudflareWindow : Window
         }
 
         var targetUrl = new Uri(new Uri(_siteBaseUrl), relativeUrl).ToString();
-        await _fetchLock.WaitAsync();
+        await _fetchLock.WaitAsync(cancellationToken);
         var navigationCompletionSource = new TaskCompletionSource<CoreWebView2NavigationCompletedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         void HandleNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs args)
@@ -132,7 +132,7 @@ public partial class CloudflareWindow : Window
             Browser.CoreWebView2.Navigate(targetUrl);
             var navigation = await navigationCompletionSource.Task;
 
-            await Task.Delay(80);
+            await WaitForPageContentAsync(relativeUrl, cancellationToken);
             var payload = await Browser.CoreWebView2.ExecuteScriptAsync(
                 "JSON.stringify({ status: document.documentElement ? 200 : 0, url: location.href, title: document.title, html: document.documentElement ? document.documentElement.outerHTML : '', headers: {} })");
             var result = DeserializeScriptResult<BrowserFetchResult>(payload) ?? new BrowserFetchResult();
@@ -150,6 +150,49 @@ public partial class CloudflareWindow : Window
         {
             Browser.CoreWebView2.NavigationCompleted -= HandleNavigationCompleted;
             _fetchLock.Release();
+        }
+    }
+
+    private async Task WaitForPageContentAsync(string relativeUrl, CancellationToken cancellationToken)
+    {
+        if (Browser.CoreWebView2 is null)
+        {
+            return;
+        }
+
+        var isWatchPage = relativeUrl.StartsWith("watch?", StringComparison.OrdinalIgnoreCase);
+        var isSearchPage = relativeUrl.StartsWith("search?", StringComparison.OrdinalIgnoreCase);
+        var minimumWait = TimeSpan.FromMilliseconds(isWatchPage || isSearchPage ? 35 : 15);
+        var maximumWait = isWatchPage
+            ? TimeSpan.FromMilliseconds(260)
+            : isSearchPage
+                ? TimeSpan.FromMilliseconds(180)
+                : TimeSpan.FromMilliseconds(60);
+        var startedAt = DateTime.UtcNow;
+
+        while (true)
+        {
+            var payload = await Browser.CoreWebView2.ExecuteScriptAsync(
+                "JSON.stringify({ ready: document.readyState, bodyLength: document.body ? document.body.innerHTML.length : 0, relatedContainers: document.querySelectorAll('[class*=\"related\"], [class*=\"recommend\"]').length, relatedLinks: document.querySelectorAll('[class*=\"related\"] a[href], [class*=\"recommend\"] a[href]').length, resultLinks: document.querySelectorAll('.content-padding-new a[href], .home-rows-videos-wrapper a[href]').length })");
+            var state = DeserializeScriptResult<PageReadiness>(payload) ?? new PageReadiness();
+            var elapsed = DateTime.UtcNow - startedAt;
+            var pageReady = string.Equals(state.Ready, "complete", StringComparison.OrdinalIgnoreCase) && state.BodyLength > 0;
+            var relatedReady = state.RelatedContainers == 0 || state.RelatedLinks > 0;
+            var resultReady = state.ResultLinks > 0;
+
+            if (pageReady && elapsed >= minimumWait &&
+                (!isWatchPage || relatedReady || elapsed >= maximumWait) &&
+                (!isSearchPage || resultReady || elapsed >= maximumWait))
+            {
+                return;
+            }
+
+            if (elapsed >= maximumWait)
+            {
+                return;
+            }
+
+            await Task.Delay(20, cancellationToken);
         }
     }
 
@@ -392,5 +435,14 @@ public partial class CloudflareWindow : Window
         public string? Ready { get; set; }
         public string? Href { get; set; }
         public string? BodyText { get; set; }
+    }
+
+    private sealed class PageReadiness
+    {
+        public string? Ready { get; set; }
+        public int BodyLength { get; set; }
+        public int RelatedContainers { get; set; }
+        public int RelatedLinks { get; set; }
+        public int ResultLinks { get; set; }
     }
 }

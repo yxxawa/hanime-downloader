@@ -2,7 +2,6 @@ using Hanime1Downloader.CSharp.Models;
 using Microsoft.Web.WebView2.Core;
 using System.IO;
 using System.Runtime.InteropServices;
-using System.Text.Json;
 using System.Windows;
 
 namespace Hanime1Downloader.CSharp.Views;
@@ -14,9 +13,11 @@ public partial class PlayerWindow : Window
         "Hanime1Downloader.CSharp",
         "WebView2",
         "player");
+    private static readonly Lazy<string> HlsScript = new(LoadHlsScript);
 
     private readonly AppSettings _settings;
     private bool _isBrowserReady;
+    private bool _webResourceHandlerAttached;
     private string _currentVideoUrl = string.Empty;
 
     public PlayerWindow(AppSettings settings)
@@ -45,16 +46,54 @@ public partial class PlayerWindow : Window
             await Browser.EnsureCoreWebView2Async(environment);
             Browser.CoreWebView2.Settings.AreDevToolsEnabled = false;
             Browser.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
+            Browser.CoreWebView2.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
+            Browser.CoreWebView2.WebResourceRequested += OnWebResourceRequested;
+            _webResourceHandlerAttached = true;
             _isBrowserReady = true;
         }
 
-        var encodedUrl = JsonSerializer.Serialize(videoUrl);
-        var mimeType = type.Contains("m3u8", StringComparison.OrdinalIgnoreCase)
-            ? "application/vnd.apple.mpegurl"
-            : "video/mp4";
-
-        Browser.NavigateToString($"<!DOCTYPE html><html><head><meta charset=\"utf-8\" /><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" /><style>html, body {{ margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }} video {{ width: 100%; height: 100%; background: #000; }}</style></head><body><video controls autoplay playsinline><source src={encodedUrl} type=\"{mimeType}\"></video></body></html>");
+        var page = PlayerPageBuilder.Build(title, videoUrl, type, HlsScript.Value);
+        Browser.NavigateToString(page);
         TitleText.Text = string.IsNullOrWhiteSpace(title) ? "播放" : title;
+    }
+
+    private void OnWebResourceRequested(object? sender, CoreWebView2WebResourceRequestedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_currentVideoUrl) ||
+            !Uri.TryCreate(e.Request.Uri, UriKind.Absolute, out var requestedUri) ||
+            (!string.Equals(requestedUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+             !string.Equals(requestedUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        try
+        {
+            e.Request.Headers.SetHeader("Referer", $"https://{_settings.SiteHost.Trim().TrimEnd('/')}/");
+        }
+        catch
+        {
+        }
+    }
+
+    private static string LoadHlsScript()
+    {
+        try
+        {
+            var resource = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/hls.min.js", UriKind.Absolute));
+            if (resource is null)
+            {
+                return string.Empty;
+            }
+
+            using var stream = resource.Stream;
+            using var reader = new StreamReader(stream);
+            return reader.ReadToEnd();
+        }
+        catch
+        {
+            return string.Empty;
+        }
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
@@ -98,6 +137,11 @@ public partial class PlayerWindow : Window
 
         try
         {
+            if (_webResourceHandlerAttached)
+            {
+                Browser.CoreWebView2.WebResourceRequested -= OnWebResourceRequested;
+                _webResourceHandlerAttached = false;
+            }
             Browser.Dispose();
         }
         catch
@@ -116,10 +160,11 @@ public partial class PlayerWindow : Window
         {
             if (Browser.CoreWebView2 is not null)
             {
-                _ = Browser.CoreWebView2.ExecuteScriptAsync("document.querySelectorAll('video,audio').forEach(el => { try { el.pause(); el.removeAttribute('src'); if (typeof el.load === 'function') { el.load(); } } catch {} }); if (document.body) { document.body.innerHTML = ''; }");
+                _ = Browser.CoreWebView2.ExecuteScriptAsync("document.querySelectorAll('video,audio').forEach(el => { try { el.pause(); el.removeAttribute('src'); if (typeof el.load === 'function') { el.load(); } } catch {} }); if (window.__hanimeHls) { try { window.__hanimeHls.destroy(); } catch {} window.__hanimeHls = null; } if (document.body) { document.body.innerHTML = ''; }");
                 Browser.CoreWebView2.Stop();
             }
 
+            _currentVideoUrl = string.Empty;
             Browser.NavigateToString("<!DOCTYPE html><html><body style=\"margin:0;background:#000;\"></body></html>");
         }
         catch
@@ -165,3 +210,4 @@ public partial class PlayerWindow : Window
         }
     }
 }
+

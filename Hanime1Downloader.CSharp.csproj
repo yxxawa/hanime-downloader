@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -27,14 +27,12 @@
   <ItemGroup>
     <EmbeddedResource Include="Assets\SearchOptions\*.json" />
     <Resource Include="Assets\app.ico" />
+    <Resource Include="Assets\hls.min.js" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Compile Remove="github_upload_source\**\*.cs" />
-    <Page Remove="github_upload_source\**\*.xaml" />
-    <EmbeddedResource Remove="github_upload_source\**\*" />
-    <None Remove="github_upload_source\**\*" />
-    <Content Remove="github_upload_source\**\*" />
-  </ItemGroup>
 
 </Project>
+
+
+
+

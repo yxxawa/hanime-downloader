@@ -11,23 +11,25 @@ public sealed class HanimeHttpClientFactory
         var bridge = new CookieSessionBridge(siteHost);
         var handler = new HttpClientHandler
         {
-            CookieContainer = bridge.CreateCookieContainer(cookies)
+            CookieContainer = bridge.CreateCookieContainer(cookies),
+            AutomaticDecompression = DecompressionMethods.All,
+            MaxConnectionsPerServer = 8
         };
 
         var baseUrl = $"https://{siteHost}/";
         var client = new HttpClient(handler)
         {
             BaseAddress = new Uri(baseUrl),
-            Timeout = TimeSpan.FromSeconds(30)
+            Timeout = TimeSpan.FromSeconds(30),
+            DefaultRequestVersion = HttpVersion.Version20,
+            DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower
         };
 
         var userAgent = BrowserIdentity.BuildUserAgent(browserVersion);
         client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", userAgent);
         client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5");
         client.DefaultRequestHeaders.TryAddWithoutValidation("Accept-Language", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7");
-        client.DefaultRequestHeaders.TryAddWithoutValidation("Accept-Encoding", "identity;q=1, *;q=0");
-        client.DefaultRequestHeaders.Connection.Clear();
-        client.DefaultRequestHeaders.Connection.Add("keep-alive");
+        client.DefaultRequestHeaders.AcceptEncoding.ParseAdd("gzip, deflate, br");
         client.DefaultRequestHeaders.TryAddWithoutValidation("Referer", baseUrl);
         client.DefaultRequestHeaders.TryAddWithoutValidation("Sec-Ch-Ua", BrowserIdentity.BuildSecChUa(browserVersion));
         client.DefaultRequestHeaders.TryAddWithoutValidation("Sec-Ch-Ua-Mobile", "?0");

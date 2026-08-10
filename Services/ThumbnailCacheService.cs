@@ -9,12 +9,18 @@ public static class ThumbnailCacheService
 {
     private static readonly HttpClient HttpClient = new(new HttpClientHandler
     {
-        AutomaticDecompression = DecompressionMethods.All
-    });
+        AutomaticDecompression = DecompressionMethods.All,
+        MaxConnectionsPerServer = 16
+    })
+    {
+        Timeout = TimeSpan.FromSeconds(15),
+        DefaultRequestVersion = HttpVersion.Version20,
+        DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+    };
 
     private static readonly ConcurrentDictionary<string, Lazy<Task<BitmapSource?>>> Cache = new(StringComparer.OrdinalIgnoreCase);
     private const int MaxCacheSize = 500;
-    private static readonly SemaphoreSlim DownloadGate = new(4, 4);
+    private static readonly SemaphoreSlim DownloadGate = new(8, 8);
 
     public static Task<BitmapSource?> GetAsync(string url, int decodePixelWidth)
     {

@@ -1,16 +1,41 @@
 using Hanime1Downloader.CSharp.Models;
 using Hanime1Downloader.CSharp.Views;
 using HtmlAgilityPack;
+using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text.RegularExpressions;
 using System.Web;
 
 namespace Hanime1Downloader.CSharp.Services;
 
-public sealed partial class HanimeApiClient(CloudflareWindow browserWindow, string siteHost = "hanime1.me")
+public sealed partial class HanimeApiClient
 {
-    private readonly CloudflareWindow _browserWindow = browserWindow;
-    private readonly string _siteBase = $"https://{siteHost}";
+    private static readonly TimeSpan SearchCacheDuration = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan DetailsCacheDuration = TimeSpan.FromMinutes(5);
+    private readonly CloudflareWindow _browserWindow;
+    private readonly HttpClient? _httpClient;
+    private readonly string _siteBase;
+    private readonly Uri _siteBaseUri;
+    private readonly ConcurrentDictionary<string, HtmlCacheEntry> _htmlCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, Lazy<Task<BrowserFetchResult>>> _htmlInFlight = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly TimeSpan DirectHtmlTimeout = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan DirectHttpCooldown = TimeSpan.FromSeconds(20);
+    private long _directHttpDisabledUntilTicks;
+
+    public HanimeApiClient(CloudflareWindow browserWindow, string siteHost = "hanime1.me")
+        : this(browserWindow, null, siteHost)
+    {
+    }
+
+    public HanimeApiClient(CloudflareWindow browserWindow, HttpClient? httpClient, string siteHost = "hanime1.me")
+    {
+        _browserWindow = browserWindow;
+        _httpClient = httpClient;
+        _siteBase = $"https://{siteHost}";
+        _siteBaseUri = new Uri($"{_siteBase}/");
+    }
 
     public async Task<SearchPageResult> SearchAsync(string keyword, int page = 1, SearchFilterOptions? filters = null, CancellationToken cancellationToken = default)
     {
@@ -18,7 +43,7 @@ public sealed partial class HanimeApiClient(CloudflareWindow browserWindow, stri
         var normalizedPage = Math.Max(1, page);
         var queryString = BuildSearchQueryString(keyword, normalizedPage, filters);
         Debug.WriteLine($"[{operationId}] Search fetch: page={normalizedPage}, keyword={keyword}");
-        var response = await _browserWindow.FetchHtmlAsync($"search?{queryString}", cancellationToken);
+        var response = await FetchHtmlAsync($"search?{queryString}", cancellationToken);
         EnsureNotBlocked(response);
         var result = await Task.Run(() => ParseSearchResult(response, normalizedPage), cancellationToken);
         Debug.WriteLine($"[{operationId}] Search parsed: page={result.CurrentPage}, total={result.TotalPages}, count={result.Results.Count}");
@@ -237,41 +262,23 @@ public sealed partial class HanimeApiClient(CloudflareWindow browserWindow, stri
 
     private void AppendSearchItem(List<VideoSummary> results, HashSet<string> seen, HtmlNode node, string[] titleSelectors, bool resolveHref)
     {
-        var href = resolveHref
-            ? node.SelectSingleNode(".//a[@href]")?.GetAttributeValue("href", string.Empty) ?? string.Empty
-            : node.GetAttributeValue("href", string.Empty);
-
-        if (string.IsNullOrWhiteSpace(href) && !resolveHref)
+        var linkNode = FindLinkNode(node);
+        var href = ReadLinkValue(linkNode ?? node);
+        if (!resolveHref && linkNode is not null)
         {
-            var linkNode = node.SelectSingleNode(".//a[@href]");
-            if (linkNode is not null)
-            {
-                node = linkNode;
-                href = node.GetAttributeValue("href", string.Empty);
-            }
+            node = linkNode.ParentNode is not null && !IsLinkNode(linkNode.ParentNode)
+                ? linkNode.ParentNode
+                : linkNode;
         }
 
-        var match = VideoIdRegex().Match(href);
-        if (!match.Success) return;
-
-        var id = match.Groups[1].Value;
-        if (!seen.Add(id)) return;
-
-        HtmlNode? titleNode = null;
-        foreach (var selector in titleSelectors)
+        if (!TryExtractVideoId(linkNode ?? node, href, out var id) || !seen.Add(id))
         {
-            titleNode = node.SelectSingleNode(selector);
-            if (titleNode is not null) break;
-        }
-
-        var coverNode = node.SelectSingleNode(".//img[@src or @data-src or @data-original or @data-lazy-src]");
-        var title = ToDisplayText(titleNode?.InnerText?.Trim(), titleNode?.GetAttributeValue("title", string.Empty) ?? $"视频 {id}");
-        if (string.IsNullOrWhiteSpace(title))
-        {
-            seen.Remove(id);
             return;
         }
 
+        var coverNode = node.SelectSingleNode(".//img[@src or @data-src or @data-original or @data-lazy-src]")
+                       ?? linkNode?.SelectSingleNode(".//img[@src or @data-src or @data-original or @data-lazy-src]");
+        var title = ExtractCardTitle(node, linkNode, id, titleSelectors);
         results.Add(new VideoSummary
         {
             VideoId = id,
@@ -281,16 +288,199 @@ public sealed partial class HanimeApiClient(CloudflareWindow browserWindow, stri
         });
     }
 
-    public async Task<VideoDetails?> GetDetailsAsync(string videoId, VideoDetailsLoadOptions loadOptions = VideoDetailsLoadOptions.All, CancellationToken cancellationToken = default)
+    private static HtmlNode? FindLinkNode(HtmlNode node)
     {
-        var watchResponse = await _browserWindow.FetchHtmlAsync($"watch?v={videoId}", cancellationToken);
+        if (IsLinkNode(node))
+        {
+            return node;
+        }
+
+        return node.SelectSingleNode(".//a[@href or @data-href or @data-url or @data-video-id or @data-id]")
+               ?? node.SelectSingleNode(".//*[@data-video-id or @data-id or @data-href or @data-url]");
+    }
+
+    private static bool IsLinkNode(HtmlNode node)
+    {
+        return node.Name.Equals("a", StringComparison.OrdinalIgnoreCase) ||
+               !string.IsNullOrWhiteSpace(node.GetAttributeValue("href", string.Empty)) ||
+               !string.IsNullOrWhiteSpace(node.GetAttributeValue("data-href", string.Empty)) ||
+               !string.IsNullOrWhiteSpace(node.GetAttributeValue("data-url", string.Empty));
+    }
+
+    private static string ReadLinkValue(HtmlNode? node)
+    {
+        if (node is null)
+        {
+            return string.Empty;
+        }
+
+        foreach (var attribute in new[] { "href", "data-href", "data-url", "data-link", "url" })
+        {
+            var value = node.GetAttributeValue(attribute, string.Empty);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static bool TryExtractVideoId(HtmlNode? node, string? rawUrl, out string videoId)
+    {
+        foreach (var attribute in new[] { "data-video-id", "data-video", "video-id", "data-id", "data-v" })
+        {
+            var value = node?.GetAttributeValue(attribute, string.Empty);
+            if (TryNormalizeVideoId(value, out videoId))
+            {
+                return true;
+            }
+        }
+
+        foreach (var value in new[] { rawUrl, ReadLinkValue(node) })
+        {
+            if (TryNormalizeVideoId(value, out videoId))
+            {
+                return true;
+            }
+        }
+
+        videoId = string.Empty;
+        return false;
+    }
+
+    private static bool TryNormalizeVideoId(string? rawValue, out string videoId)
+    {
+        var value = HttpUtility.UrlDecode(HttpUtility.HtmlDecode(rawValue ?? string.Empty))?.Trim() ?? string.Empty;
+        if (value.Length > 0 && value.All(char.IsDigit))
+        {
+            videoId = value;
+            return true;
+        }
+
+        var match = VideoIdRegex().Match(value);
+        if (match.Success)
+        {
+            videoId = match.Groups[1].Value;
+            return true;
+        }
+
+        videoId = string.Empty;
+        return false;
+    }
+
+    private static string ExtractCardTitle(HtmlNode item, HtmlNode? linkNode, string videoId, IEnumerable<string> titleSelectors)
+    {
+        foreach (var selector in titleSelectors)
+        {
+            var title = ExtractUsableTitle(item.SelectSingleNode(selector), videoId);
+            if (!string.IsNullOrWhiteSpace(title))
+            {
+                return title;
+            }
+        }
+
+        foreach (var selector in new[]
+        {
+            ".//*[contains(@class, 'video-title')]",
+            ".//*[contains(@class, 'title')]",
+            ".//h1",
+            ".//h2",
+            ".//h3",
+            ".//h4"
+        })
+        {
+            var title = ExtractUsableTitle(item.SelectSingleNode(selector), videoId);
+            if (!string.IsNullOrWhiteSpace(title))
+            {
+                return title;
+            }
+        }
+
+        var metadataNodes = item.SelectNodes(".//*[@data-title or @data-name or @title or @aria-label or @alt]")?.ToList() ?? [];
+        foreach (var node in metadataNodes)
+        {
+            var title = ExtractUsableTitle(node, videoId);
+            if (!string.IsNullOrWhiteSpace(title))
+            {
+                return title;
+            }
+        }
+
+        foreach (var node in new[] { linkNode, item })
+        {
+            var title = ExtractUsableTitle(node, videoId);
+            if (!string.IsNullOrWhiteSpace(title))
+            {
+                return title;
+            }
+        }
+
+        return $"视频 {videoId}";
+    }
+
+    private static string ExtractUsableTitle(HtmlNode? node, string videoId)
+    {
+        if (node is null)
+        {
+            return string.Empty;
+        }
+
+        foreach (var attribute in new[] { "data-title", "data-name", "title", "aria-label", "alt" })
+        {
+            var title = ToDisplayText(node.GetAttributeValue(attribute, string.Empty));
+            if (IsUsableTitle(title, videoId))
+            {
+                return title;
+            }
+        }
+
+        var text = ToDisplayText(node.InnerText);
+        return IsUsableTitle(text, videoId) ? text : string.Empty;
+    }
+
+    private static bool IsUsableTitle(string? title, string videoId)
+    {
+        var normalized = string.Join(" ", (title ?? string.Empty).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return false;
+        }
+
+        var compact = normalized.Replace(" ", string.Empty, StringComparison.Ordinal);
+        return !compact.Equals(videoId, StringComparison.OrdinalIgnoreCase) &&
+               !compact.Equals($"视频{videoId}", StringComparison.OrdinalIgnoreCase) &&
+               !compact.Equals($"video{videoId}", StringComparison.OrdinalIgnoreCase) &&
+               !compact.Equals("播放", StringComparison.OrdinalIgnoreCase) &&
+               !compact.Equals("观看", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public async Task<VideoDetails?> GetDetailsAsync(string videoId, VideoDetailsLoadOptions loadOptions = VideoDetailsLoadOptions.Basic | VideoDetailsLoadOptions.Sources, CancellationToken cancellationToken = default)
+    {
+        var watchResponse = await FetchHtmlAsync($"watch?v={videoId}", cancellationToken);
         EnsureNotBlocked(watchResponse);
 
         BrowserFetchResult? downloadResponse = null;
+        Task<BrowserFetchResult>? downloadTask = null;
+        if (loadOptions.HasFlag(VideoDetailsLoadOptions.Sources) && !HasEmbeddedSourceHint(watchResponse.Html))
+        {
+            // Start the fallback request while the watch-page DOM is parsed. The fallback is only
+            // prefetched when the watch HTML has no source marker, avoiding an extra request for the
+            // common case where the player already exposes playable URLs.
+            downloadTask = FetchHtmlAsync($"download?v={videoId}", cancellationToken);
+        }
+
+        if (downloadTask is not null)
+        {
+            _ = ObserveAsync(downloadTask);
+        }
+
         var parsedDetails = await Task.Run(() => ParseWatchDetails(videoId, watchResponse, loadOptions), cancellationToken);
         if (loadOptions.HasFlag(VideoDetailsLoadOptions.Sources) && parsedDetails.Sources.Count == 0)
         {
-            downloadResponse = await _browserWindow.FetchHtmlAsync($"download?v={videoId}", cancellationToken);
+            downloadResponse = downloadTask is not null
+                ? await downloadTask
+                : await FetchHtmlAsync($"download?v={videoId}", cancellationToken);
             EnsureNotBlocked(downloadResponse);
             parsedDetails = await Task.Run(() => MergeDownloadSources(parsedDetails, downloadResponse.Html), cancellationToken);
         }
@@ -333,32 +523,29 @@ public sealed partial class HanimeApiClient(CloudflareWindow browserWindow, stri
             details.CoverUrl = ExtractCoverUrl(coverNode);
         }
 
-        if (loadOptions.HasFlag(VideoDetailsLoadOptions.Meta) || loadOptions.HasFlag(VideoDetailsLoadOptions.Tags))
+        if (loadOptions.HasFlag(VideoDetailsLoadOptions.Meta))
         {
             var infoPanel = doc.DocumentNode.SelectSingleNode("//div[contains(@class, 'video-description-panel')]");
             var infoText = HtmlEntity.DeEntitize(infoPanel?.InnerText?.Trim() ?? string.Empty);
-            if (loadOptions.HasFlag(VideoDetailsLoadOptions.Meta))
-            {
-                details.UploadDate = ToDisplayText(ExtractFirstMatch(infoText, DateRegex()));
-                details.Views = ToDisplayText(ExtractFirstMatch(infoText, ViewsRegex()));
-                details.Duration = ToDisplayText(doc.DocumentNode.SelectSingleNode("//div[contains(@class, 'card-mobile-duration')]")?.InnerText?.Trim());
-                details.Likes = ToDisplayText(doc.DocumentNode.SelectSingleNode("//*[@id='video-like-btn']")?.InnerText?.Trim());
-                details.Description = ToDisplayText(doc.DocumentNode.SelectSingleNode("//div[contains(@class, 'video-caption-text')]")?.InnerText?.Trim());
-            }
+            details.UploadDate = ToDisplayText(ExtractFirstMatch(infoText, DateRegex()));
+            details.Views = ToDisplayText(ExtractFirstMatch(infoText, ViewsRegex()));
+            details.Duration = ToDisplayText(doc.DocumentNode.SelectSingleNode("//div[contains(@class, 'card-mobile-duration')]")?.InnerText?.Trim());
+            details.Likes = ToDisplayText(doc.DocumentNode.SelectSingleNode("//*[@id='video-like-btn']")?.InnerText?.Trim());
+            details.Description = ToDisplayText(doc.DocumentNode.SelectSingleNode("//div[contains(@class, 'video-caption-text')]")?.InnerText?.Trim());
+        }
 
-            if (loadOptions.HasFlag(VideoDetailsLoadOptions.Tags))
-            {
-                details.Tags = doc.DocumentNode.SelectNodes("//*[contains(@class, 'single-video-tag')]//a[@href]")?
-                    .Select(node => ToDisplayText(node.InnerText.Trim()).TrimStart('#'))
-                    .Where(text => !string.IsNullOrWhiteSpace(text))
-                    .Distinct()
-                    .ToList() ?? [];
-            }
+        if (loadOptions.HasFlag(VideoDetailsLoadOptions.Tags))
+        {
+            details.Tags = doc.DocumentNode.SelectNodes("//*[contains(@class, 'single-video-tag')]//a[@href]")?
+                .Select(node => ToDisplayText(node.InnerText.Trim()).TrimStart('#'))
+                .Where(text => !string.IsNullOrWhiteSpace(text))
+                .Distinct()
+                .ToList() ?? [];
         }
 
         if (loadOptions.HasFlag(VideoDetailsLoadOptions.RelatedVideos))
         {
-            details.RelatedVideos = ParseRelatedVideos(doc);
+            details.RelatedVideos = ParseRelatedVideos(doc, videoId);
         }
 
         if (loadOptions.HasFlag(VideoDetailsLoadOptions.Sources))
@@ -374,32 +561,88 @@ public sealed partial class HanimeApiClient(CloudflareWindow browserWindow, stri
         return details;
     }
 
-    private List<VideoSummary> ParseRelatedVideos(HtmlDocument doc)
+    private List<VideoSummary> ParseRelatedVideos(HtmlDocument doc, string currentVideoId)
     {
         var results = new List<VideoSummary>();
-        var seen = new HashSet<string>();
-        var relatedNodes = doc.DocumentNode.SelectNodes("//div[contains(@class, 'related-watch-wrap')]")?.ToList() ?? [];
-        foreach (var item in relatedNodes)
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var itemNodes = new List<HtmlNode>();
+        var relatedRoots = doc.DocumentNode.SelectNodes(
+            "//*[self::div or self::section or self::ul or self::ol or self::aside or self::article][" +
+            "contains(@class, 'related-watch-wrap') or contains(@class, 'related-video') or " +
+            "contains(@class, 'video-related') or contains(@class, 'recommend') or " +
+            "contains(@class, 'recommendation') or contains(@class, 'home-rows-videos-wrapper')]")?.ToList() ?? [];
+
+        foreach (var root in relatedRoots)
         {
-            var linkNode = item.SelectSingleNode(".//a[contains(@class, 'overlay') and @href]")
-                           ?? item.SelectSingleNode(".//a[@href]");
-            var href = linkNode?.GetAttributeValue("href", string.Empty) ?? string.Empty;
-            var match = VideoIdRegex().Match(href);
-            if (!match.Success)
+            if (TryExtractVideoId(root, ReadLinkValue(root), out _))
+            {
+                itemNodes.Add(root);
+            }
+
+            var links = root.SelectNodes(".//a[@href or @data-href or @data-url or @data-video-id or @data-id]")?.ToList() ?? [];
+            var linkIds = links
+                .Where(link => TryExtractVideoId(link, ReadLinkValue(link), out _))
+                .Select(link =>
+                {
+                    TryExtractVideoId(link, ReadLinkValue(link), out var id);
+                    return id;
+                })
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (linkIds.Count == 1 && root.GetAttributeValue("class", string.Empty).Contains("related-watch-wrap", StringComparison.OrdinalIgnoreCase))
+            {
+                itemNodes.Add(root);
+                continue;
+            }
+
+            foreach (var link in links)
+            {
+                var item = FindRelatedCard(link, root);
+                if (!itemNodes.Contains(item))
+                {
+                    itemNodes.Add(item);
+                }
+            }
+        }
+
+        if (itemNodes.Count == 0)
+        {
+            var fallbackLinks = doc.DocumentNode.SelectNodes("//a[@href or @data-href or @data-url or @data-video-id or @data-id]")?.ToList() ?? [];
+            foreach (var link in fallbackLinks)
+            {
+                if (!TryExtractVideoId(link, ReadLinkValue(link), out var id) ||
+                    string.Equals(id, currentVideoId, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var item = FindRelatedCard(link, doc.DocumentNode);
+                if (!itemNodes.Contains(item))
+                {
+                    itemNodes.Add(item);
+                }
+            }
+        }
+
+        foreach (var item in itemNodes)
+        {
+            var linkNode = FindLinkNode(item) ?? item.SelectSingleNode(".//a[@href or @data-href or @data-url]");
+            var href = ReadLinkValue(linkNode ?? item);
+            if (!TryExtractVideoId(item, href, out var videoId) ||
+                string.Equals(videoId, currentVideoId, StringComparison.OrdinalIgnoreCase) ||
+                !seen.Add(videoId))
             {
                 continue;
             }
 
-            var videoId = match.Groups[1].Value;
-            if (!seen.Add(videoId))
+            var title = ExtractCardTitle(item, linkNode, videoId, new[]
             {
-                continue;
-            }
-
-            var titleNode = item.SelectSingleNode(".//div[contains(@class, 'home-rows-videos-title')]")
-                            ?? item.SelectSingleNode(".//div[contains(@class, 'card-mobile-title')]")
-                            ?? item.SelectSingleNode(".//*[@title]");
-            var title = ToDisplayText(titleNode?.InnerText?.Trim(), titleNode?.GetAttributeValue("title", string.Empty) ?? $"视频 {videoId}");
+                ".//div[contains(@class, 'home-rows-videos-title')]",
+                ".//div[contains(@class, 'card-mobile-title')]",
+                ".//*[contains(@class, 'related-title')]",
+                ".//*[contains(@class, 'video-name')]"
+            });
             var coverNode = item.SelectSingleNode(".//img[@src or @data-src or @data-original or @data-lazy-src]");
             results.Add(new VideoSummary
             {
@@ -411,6 +654,31 @@ public sealed partial class HanimeApiClient(CloudflareWindow browserWindow, stri
         }
 
         return results;
+    }
+
+    private static HtmlNode FindRelatedCard(HtmlNode link, HtmlNode root)
+    {
+        HtmlNode? nearestBlock = null;
+        for (var current = link; current is not null && !ReferenceEquals(current, root); current = current.ParentNode)
+        {
+            if (current.Name is "div" or "li" or "article" or "section")
+            {
+                nearestBlock ??= current;
+                var className = current.GetAttributeValue("class", string.Empty);
+                if (className.Contains("card", StringComparison.OrdinalIgnoreCase) ||
+                    className.Contains("video", StringComparison.OrdinalIgnoreCase) ||
+                    className.Contains("related", StringComparison.OrdinalIgnoreCase) ||
+                    className.Contains("recommend", StringComparison.OrdinalIgnoreCase) ||
+                    className.Contains("item", StringComparison.OrdinalIgnoreCase) ||
+                    className.Contains("tile", StringComparison.OrdinalIgnoreCase) ||
+                    className.Contains("watch", StringComparison.OrdinalIgnoreCase))
+                {
+                    return current;
+                }
+            }
+        }
+
+        return nearestBlock ?? link;
     }
 
     private void AppendSourcesFromWatchPage(List<VideoSource> sources, HtmlDocument doc, string html)
@@ -523,12 +791,176 @@ public sealed partial class HanimeApiClient(CloudflareWindow browserWindow, stri
         });
     }
 
+    private async Task<BrowserFetchResult> FetchHtmlAsync(string relativeUrl, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var targetUri = new Uri(_siteBaseUri, relativeUrl);
+        var cacheKey = targetUri.AbsoluteUri;
+        var now = DateTimeOffset.UtcNow;
+        if (_htmlCache.TryGetValue(cacheKey, out var cached) && cached.ExpiresAt > now)
+        {
+            Debug.WriteLine($"[html-cache] hit: {cacheKey}");
+            return cached.Response;
+        }
+
+        var lazy = new Lazy<Task<BrowserFetchResult>>(
+            () => FetchHtmlCoreAsync(relativeUrl, targetUri, CancellationToken.None),
+            LazyThreadSafetyMode.ExecutionAndPublication);
+        var inFlight = _htmlInFlight.GetOrAdd(cacheKey, lazy);
+        try
+        {
+            var response = await inFlight.Value.WaitAsync(cancellationToken);
+            if (ShouldCache(response))
+            {
+                _htmlCache[cacheKey] = new HtmlCacheEntry(response, DateTimeOffset.UtcNow + GetCacheDuration(relativeUrl));
+            }
+
+            return response;
+        }
+        finally
+        {
+            if (inFlight.Value.IsCompleted && _htmlInFlight.TryGetValue(cacheKey, out var current) && ReferenceEquals(current, inFlight))
+            {
+                _htmlInFlight.TryRemove(cacheKey, out _);
+            }
+        }
+    }
+
+    private async Task<BrowserFetchResult> FetchHtmlCoreAsync(string relativeUrl, Uri targetUri, CancellationToken cancellationToken)
+    {
+        if (_httpClient is not null && IsDirectHttpAvailable())
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, targetUri);
+                request.Headers.Referrer = _siteBaseUri;
+                request.Headers.Accept.Clear();
+                request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/html"));
+                request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/xhtml+xml"));
+                request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*", 0.5));
+                request.Headers.AcceptEncoding.Clear();
+                request.Headers.AcceptEncoding.ParseAdd("gzip, deflate, br");
+                request.Headers.Remove("Sec-Fetch-Dest");
+                request.Headers.Remove("Sec-Fetch-Mode");
+                request.Headers.Remove("Sec-Fetch-Site");
+                request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "document");
+                request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "navigate");
+                request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "same-origin");
+
+                using var requestTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                requestTimeout.CancelAfter(DirectHtmlTimeout);
+                using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestTimeout.Token);
+                var html = await response.Content.ReadAsStringAsync(requestTimeout.Token);
+                var result = new BrowserFetchResult
+                {
+                    Status = (int)response.StatusCode,
+                    Url = response.RequestMessage?.RequestUri?.ToString() ?? targetUri.ToString(),
+                    Html = html,
+                    Title = ExtractHtmlTitle(html)
+                };
+
+                if (response.IsSuccessStatusCode && !IsChallengePage(html))
+                {
+                    Debug.WriteLine($"[html-http] {targetUri} status={(int)response.StatusCode} bytes={html.Length}");
+                    return result;
+                }
+
+                DisableDirectHttp();
+                Debug.WriteLine($"[html-http] fallback to WebView2: {targetUri} status={(int)response.StatusCode} challenge={IsChallengePage(html)} cooldown={DirectHttpCooldown.TotalSeconds:0}s");
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                DisableDirectHttp();
+                Debug.WriteLine($"[html-http] timeout, fallback to WebView2: {targetUri} cooldown={DirectHttpCooldown.TotalSeconds:0}s");
+            }
+            catch (HttpRequestException ex)
+            {
+                DisableDirectHttp();
+                Debug.WriteLine($"[html-http] request failed, fallback to WebView2: {targetUri} error={ex.Message} cooldown={DirectHttpCooldown.TotalSeconds:0}s");
+            }
+            catch (ObjectDisposedException)
+            {
+                DisableDirectHttp();
+                Debug.WriteLine($"[html-http] client disposed, fallback to WebView2: {targetUri} cooldown={DirectHttpCooldown.TotalSeconds:0}s");
+            }
+        }
+
+        return await _browserWindow.FetchHtmlAsync(relativeUrl, cancellationToken);
+    }
+
+    private bool IsDirectHttpAvailable()
+    {
+        return DateTimeOffset.UtcNow.Ticks >= Interlocked.Read(ref _directHttpDisabledUntilTicks);
+    }
+
+    private void DisableDirectHttp()
+    {
+        Interlocked.Exchange(ref _directHttpDisabledUntilTicks, DateTimeOffset.UtcNow.Add(DirectHttpCooldown).Ticks);
+    }
+
+    private static bool HasEmbeddedSourceHint(string html)
+    {
+        return html.Contains(".mp4", StringComparison.OrdinalIgnoreCase) ||
+               html.Contains(".m3u8", StringComparison.OrdinalIgnoreCase) ||
+               html.Contains("data-url", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task ObserveAsync(Task task)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch
+        {
+            // The page is only a speculative fallback; the watch-page sources remain authoritative.
+        }
+    }
+
+    private static bool ShouldCache(BrowserFetchResult response)
+    {
+        return response.Status is >= 200 and < 300 &&
+               !string.IsNullOrWhiteSpace(response.Html) &&
+               !IsChallengePage(response.Html);
+    }
+
+    private static TimeSpan GetCacheDuration(string relativeUrl)
+    {
+        return relativeUrl.StartsWith("search?", StringComparison.OrdinalIgnoreCase)
+            ? SearchCacheDuration
+            : DetailsCacheDuration;
+    }
+
+    private static string ExtractHtmlTitle(string html)
+    {
+        var match = HtmlTitleRegex().Match(html ?? string.Empty);
+        return match.Success ? HtmlEntity.DeEntitize(match.Groups[1].Value).Trim() : string.Empty;
+    }
+
+    private static bool IsChallengePage(string html)
+    {
+        return html.Contains("Performing security verification", StringComparison.OrdinalIgnoreCase) ||
+               html.Contains("Just a moment", StringComparison.OrdinalIgnoreCase) ||
+               html.Contains("Enable JavaScript and cookies to continue", StringComparison.OrdinalIgnoreCase) ||
+               html.Contains("window._cf_chl_opt", StringComparison.OrdinalIgnoreCase) ||
+               html.Contains("challenge-form", StringComparison.OrdinalIgnoreCase) ||
+               html.Contains("cf-challenge", StringComparison.OrdinalIgnoreCase) ||
+               html.Contains("cf-mitigated", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private sealed record HtmlCacheEntry(BrowserFetchResult Response, DateTimeOffset ExpiresAt);
+
+    [GeneratedRegex("<title\\b[^>]*>(.*?)</title>", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
+    private static partial Regex HtmlTitleRegex();
+
     private static void EnsureNotBlocked(BrowserFetchResult response)
     {
         if (response.Html.Contains("Performing security verification", StringComparison.OrdinalIgnoreCase) ||
             response.Html.Contains("Just a moment", StringComparison.OrdinalIgnoreCase) ||
             response.Html.Contains("Enable JavaScript and cookies to continue", StringComparison.OrdinalIgnoreCase) ||
             response.Html.Contains("window._cf_chl_opt", StringComparison.OrdinalIgnoreCase) ||
+            response.Html.Contains("challenge-form", StringComparison.OrdinalIgnoreCase) ||
+            response.Html.Contains("cf-challenge", StringComparison.OrdinalIgnoreCase) ||
             response.Html.Contains("cf-mitigated", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("请求被 Cloudflare 挑战页拦截，请重新验证。页面仍是 Cloudflare 验证页。");
@@ -613,7 +1045,7 @@ public sealed partial class HanimeApiClient(CloudflareWindow browserWindow, stri
         return match.Success && int.TryParse(match.Groups[1].Value, out var quality) ? quality : 0;
     }
 
-    [GeneratedRegex(@"v=(\d+)")]
+    [GeneratedRegex(@"(?:[?&](?:v|id|video[_-]?id|videoId)=|/(?:watch|video|videos)(?:/|=)|(?:^|[^\d])(?:video[_-]?id|vid)[=:])(\d+)", RegexOptions.IgnoreCase)]
     private static partial Regex VideoIdRegex();
 
     [GeneratedRegex(@"(\d{4}-\d{2}-\d{2})")]
