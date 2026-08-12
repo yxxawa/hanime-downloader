@@ -49,15 +49,21 @@
 **搜索与浏览**
 
 - 视频搜索，支持关键词与 ID 直达
+- 搜索历史下拉（聚焦搜索框显示，右键删除单项）
 - 高级筛选：标签、日期、时长、排序、广泛配对
 - 详情面板：简介、标签、相关视频推荐、封面预览
+- 自定义站点支持（粘贴自定义站点的 watch 链接可直接解析）
 
 **下载与队列**
 
 - 自动解析多清晰度视频源（1080P / 720P / 480P 等）
-- 下载队列：并发下载、暂停 / 恢复、失败自动重试
+- HLS/m3u8 分片下载、AES-128 解密与合并
+- 下载队列：并发下载、暂停 / 恢复、失败自动重试（可配置 0-8 次）
+- 下载限速（KB/s）、磁盘空间预检、瞬时速度显示
+- 断点续传（服务器文件变化自动从头重下）
 - 下载历史记录，避免重复下载
 - 失败后可手动触发重新解析视频源
+- 文件命名规则预设（默认 `{title}_{videoId}`）
 
 **收藏与数据**
 
@@ -105,15 +111,17 @@ dotnet publish "Hanime1Downloader.CSharp.csproj" -c Release -p:DebugType=None -p
 
 ## 数据文件
 
-所有数据均存储在程序同目录下，拷贝文件夹即可完整迁移。
+程序数据文件存储在程序同目录下，拷贝文件夹即可迁移（注意：WebView2 浏览器会话与播放器配置存储在 `%LOCALAPPDATA%\Hanime1Downloader.CSharp\WebView2\`，Cookie 缓存文件本身可以随文件夹迁移）。
 
 | 文件 | 说明 |
 |:---|:---|
-| `settings.json` | 程序设置 |
+| `settings.json` | 程序设置（含主窗口位置、搜索历史） |
 | `favorites.json` | 收藏夹数据 |
 | `download_history.json` | 下载历史 |
 | `download_queue.json` | 下载队列（可配置是否保留） |
-| `cookies.json` | Cloudflare 会话缓存 |
+| `cookies.{host}.json` | 各站点的 Cloudflare 会话缓存（`cookies.json` 为旧版格式） |
+| `app.log` | 运行日志（超过 5MB 自动轮转） |
+| `crash.log` | 崩溃日志 |
 
 ---
 

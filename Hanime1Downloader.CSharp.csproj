@@ -11,6 +11,8 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <Version>4.1.0</Version>
+    <InformationalVersion>4.1.0</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>

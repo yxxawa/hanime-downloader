@@ -80,6 +80,14 @@
                                     <ComboBox x:Name="MaxConcurrentDownloadsCombo" Height="28" DisplayMemberPath="Label" SelectedValuePath="Value"/>
                                 </DockPanel>
                                 <DockPanel Style="{StaticResource FormRowStyle}">
+                                    <TextBlock Style="{StaticResource RowLabelStyle}" Text="失败重试次数:"/>
+                                    <ComboBox x:Name="MaxRetriesCombo" Height="28" DisplayMemberPath="Label" SelectedValuePath="Value"/>
+                                </DockPanel>
+                                <DockPanel Style="{StaticResource FormRowStyle}">
+                                    <TextBlock Style="{StaticResource RowLabelStyle}" Text="下载限速 (KB/s):"/>
+                                    <TextBox x:Name="SpeedLimitBox" Height="28" VerticalContentAlignment="Center" Padding="8,0" Text="0"/>
+                                </DockPanel>
+                                <DockPanel Style="{StaticResource FormRowStyle}">
                                     <TextBlock Style="{StaticResource RowLabelStyle}" Text="访问站点:"/>
                                     <ComboBox x:Name="SiteCombo" Height="28" SelectedValuePath="Value" IsEditable="True" IsTextSearchEnabled="False" StaysOpenOnEdit="True" SelectionChanged="SiteCombo_OnSelectionChanged" LostFocus="SiteCombo_OnEditChanged" KeyUp="SiteCombo_OnEditChanged">
                                         <ComboBox.ItemContainerStyle>

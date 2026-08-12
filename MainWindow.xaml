@@ -315,8 +315,37 @@
                                  BorderThickness="0"
                                  Background="Transparent"
                                  ToolTip="输入标题或粘贴 watch 链接"
-                                 PreviewKeyDown="SearchBox_OnKeyDown"/>
+                                 PreviewKeyDown="SearchBox_OnKeyDown"
+                                 GotKeyboardFocus="SearchBox_OnGotKeyboardFocus"
+                                 LostKeyboardFocus="SearchBox_OnLostKeyboardFocus"/>
                     </Border>
+                    <Popup x:Name="SearchHistoryPopup"
+                           Grid.Column="2"
+                           Placement="Bottom"
+                           StaysOpen="False"
+                           AllowsTransparency="True">
+                        <Border MinWidth="200"
+                                MaxHeight="260"
+                                Padding="2"
+                                Background="{DynamicResource ThemeSurfaceBrush}"
+                                BorderBrush="{DynamicResource ThemeBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="2">
+                            <ListBox x:Name="SearchHistoryList"
+                                     MaxHeight="256"
+                                     BorderThickness="0"
+                                     Background="Transparent"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                     PreviewMouseLeftButtonUp="SearchHistoryItem_OnMouseLeftButtonUp"
+                                     PreviewMouseRightButtonUp="SearchHistoryItem_OnMouseRightButtonUp">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Padding="6,3" FontSize="11" Text="{Binding}"/>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Border>
+                    </Popup>
 
                     <Button x:Name="SearchButton"
                             Grid.Column="4"
@@ -623,6 +652,17 @@
                                                     BorderBrush="{DynamicResource ThemeBorderSubtleBrush}"
                                                     BorderThickness="0,0,0,1">
                                                 <DockPanel LastChildFill="True">
+                                                    <Border DockPanel.Dock="Left"
+                                                            Width="64"
+                                                            Height="36"
+                                                            Margin="0,0,6,0"
+                                                            Background="{DynamicResource ThemeCoverPlaceholderBrush}"
+                                                            BorderBrush="{DynamicResource ThemeCoverPlaceholderBorderBrush}"
+                                                            BorderThickness="1"
+                                                            CornerRadius="2"
+                                                            Visibility="{Binding DataContext.ShowListCoversVisibility, RelativeSource={RelativeSource AncestorType=Window}}">
+                                                        <Image Source="{Binding CoverImage}" Stretch="UniformToFill"/>
+                                                    </Border>
                                                     <TextBlock Text="{Binding Title}"
                                                                VerticalAlignment="Center"
                                                                Foreground="{DynamicResource ThemeTextBrush}"
@@ -908,11 +948,25 @@
                                                 Background="{DynamicResource ThemeSurfaceBrush}"
                                                 BorderBrush="{DynamicResource ThemeBorderSubtleBrush}"
                                                 BorderThickness="0,0,0,1">
-                                            <TextBlock Text="{Binding Title}"
-                                                       Foreground="{DynamicResource ThemeTextBrush}"
-                                                       FontSize="11"
-                                                       TextWrapping="NoWrap"
-                                                       TextTrimming="CharacterEllipsis"/>
+                                            <DockPanel LastChildFill="True">
+                                                <Border DockPanel.Dock="Left"
+                                                        Width="64"
+                                                        Height="36"
+                                                        Margin="0,0,6,0"
+                                                        Background="{DynamicResource ThemeCoverPlaceholderBrush}"
+                                                        BorderBrush="{DynamicResource ThemeCoverPlaceholderBorderBrush}"
+                                                        BorderThickness="1"
+                                                        CornerRadius="2"
+                                                        Visibility="{Binding DataContext.ShowListCoversVisibility, RelativeSource={RelativeSource AncestorType=Window}}">
+                                                    <Image Source="{Binding CoverImage}" Stretch="UniformToFill"/>
+                                                </Border>
+                                                <TextBlock Text="{Binding Title}"
+                                                           VerticalAlignment="Center"
+                                                           Foreground="{DynamicResource ThemeTextBrush}"
+                                                           FontSize="11"
+                                                           TextWrapping="NoWrap"
+                                                           TextTrimming="CharacterEllipsis"/>
+                                            </DockPanel>
                                         </Border>
                                     </DataTemplate>
                                 </ListBox.ItemTemplate>

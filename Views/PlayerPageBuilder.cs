@@ -12,7 +12,7 @@ public static class PlayerPageBuilder
                 uri.AbsolutePath.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase));
     }
 
-    public static string Build(string title, string videoUrl, string type, string hlsScript)
+    public static string Build(string title, string videoUrl, string type, string hlsScript, double? restoredPosition = null, double? restoredVolume = null)
     {
         var encodedUrl = JsonSerializer.Serialize(videoUrl);
         var encodedTitle = JsonSerializer.Serialize(string.IsNullOrWhiteSpace(title) ? "播放" : title);
@@ -34,6 +34,16 @@ public static class PlayerPageBuilder
         html.AppendLine("const video = document.getElementById('video');");
         html.AppendLine("const error = document.getElementById('error');");
         html.AppendLine("const showError = (message) => { error.textContent = message; error.hidden = false; };");
+        if (restoredPosition is > 3)
+        {
+            // 恢复上次播放位置：loadedmetadata 后 seek。
+            html.Append("const restoredPosition = ").Append(restoredPosition.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)).AppendLine(";");
+            html.AppendLine("video.addEventListener('loadedmetadata', () => { if (restoredPosition > 0 && restoredPosition < video.duration - 3) { try { video.currentTime = restoredPosition; } catch {} } }, { once: true });");
+        }
+        if (restoredVolume is double vol && vol >= 0)
+        {
+            html.Append("video.volume = ").Append(vol.ToString(System.Globalization.CultureInfo.InvariantCulture)).AppendLine(";");
+        }
         html.AppendLine("try {");
         html.AppendLine(hlsPlayer);
         html.AppendLine("} catch (exception) {");
@@ -48,7 +58,10 @@ public static class PlayerPageBuilder
     {
         if (!isHls)
         {
-            return "video.src = " + encodedUrl + "; video.type = " + JsonSerializer.Serialize(mimeType) + "; video.play().catch(() => {});";
+            return
+                "video.src = " + encodedUrl + "; video.type = " + JsonSerializer.Serialize(mimeType) + ";" +
+                "video.addEventListener('error', () => showError('视频加载失败: ' + (video.error ? (video.error.code + ' ' + (video.error.message || '')) : '未知错误')));" +
+                "video.play().catch(() => showError('自动播放被阻止，请点击播放按钮。'));";
         }
 
         var script = new StringBuilder(1024 + hlsScript.Length);
@@ -59,7 +72,8 @@ public static class PlayerPageBuilder
         }
         script.AppendLine("if (video.canPlayType('application/vnd.apple.mpegurl') || video.canPlayType('application/x-mpegURL')) {");
         script.AppendLine("    video.src = hlsUrl;");
-        script.AppendLine("    video.play().catch(() => {});");
+        script.AppendLine("    video.addEventListener('error', () => showError('视频加载失败: ' + (video.error ? video.error.code : '未知错误')));");
+        script.AppendLine("    video.play().catch(() => showError('自动播放被阻止，请点击播放按钮。'));");
         script.AppendLine("} else if (window.Hls && window.Hls.isSupported()) {");
         script.AppendLine("    const hls = new window.Hls({ enableWorker: true, lowLatencyMode: false, backBufferLength: 30 });");
         script.AppendLine("    window.__hanimeHls = hls;");
@@ -72,7 +86,7 @@ public static class PlayerPageBuilder
         script.AppendLine("    hls.loadSource(hlsUrl);");
         script.AppendLine("    hls.attachMedia(video);");
         script.AppendLine("} else {");
-        script.AppendLine("    showError('当前 WebView2 不支持 HLS/M3U8 播放。');");
+        script.AppendLine("    showError('播放器脚本加载失败或当前环境不支持 HLS 播放。');");
         script.AppendLine("}");
         return script.ToString();
     }

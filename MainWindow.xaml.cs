@@ -39,6 +39,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly SearchFilterOptions _searchFilters = new();
     private readonly ObservableCollection<VideoSummary> _searchResults = [];
     private readonly ObservableCollection<DownloadHistoryItem> _historyItems = [];
+    private readonly HashSet<string> _historyVideoIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<HttpClient> _retiredHttpClients = [];
     private readonly ObservableCollection<DownloadQueueItem> _downloadQueue = [];
     private readonly Dictionary<string, ObservableCollection<VideoSummary>> _favoriteFolders = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, VideoDetails> _videoDetailsCache = new(StringComparer.OrdinalIgnoreCase);
@@ -88,7 +90,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private string _currentSearchKeyword = string.Empty;
     private int _currentPage = 1;
     private int _totalPages = 1;
-    private static readonly Regex VideoLinkRegex = new(@"https?://(?:hanime1\.me|hanime1\.com|hanimeone\.me|javchu\.com)/watch\?v=(\d+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private Regex? _cachedVideoLinkRegex;
+    private string _cachedVideoLinkRegexHost = string.Empty;
+
+    /// <summary>按当前站点 + 自定义站点动态构建 watch 链接正则（修复：自定义站点粘贴链接失效）。</summary>
+    private Regex BuildVideoLinkRegex()
+    {
+        var hosts = new List<string> { _settings.SiteHost };
+        hosts.AddRange(_settings.CustomSiteHosts.Where(host => !string.IsNullOrWhiteSpace(host)));
+        var hostKey = string.Join("|", hosts);
+        if (_cachedVideoLinkRegex is null || !string.Equals(_cachedVideoLinkRegexHost, hostKey, StringComparison.OrdinalIgnoreCase))
+        {
+            var pattern = @"https?://(?:" + string.Join("|", hosts.Select(Regex.Escape)) + @")/watch\?v=(\d+)";
+            _cachedVideoLinkRegex = new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+            _cachedVideoLinkRegexHost = hostKey;
+        }
+        return _cachedVideoLinkRegex;
+    }
     private readonly List<string> _startupWarnings = [];
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -98,6 +116,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         InitializeComponent();
         DataContext = this;
+        var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "4.1.0";
+        Title = $"Hanime1视频工具 v{version}";
         _favoritesFilterTimer.Tick += (_, _) =>
         {
             _favoritesFilterTimer.Stop();
@@ -142,15 +162,101 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         UpdateDownloadQueueControlUi();
     }
 
+    private void RestoreWindowBounds()
+    {
+        // 仅当保存的位置在可见屏幕范围内时恢复（防止显示器变更后窗口出现在屏幕外）。
+        var left = _settings.WindowLeft;
+        var top = _settings.WindowTop;
+        var virtualBounds = new Rect(
+            SystemParameters.VirtualScreenLeft,
+            SystemParameters.VirtualScreenTop,
+            SystemParameters.VirtualScreenWidth,
+            SystemParameters.VirtualScreenHeight);
+        if (left is double l && top is double t &&
+            virtualBounds.Contains(new Point(l + 50, t + 20)))
+        {
+            Left = l;
+            Top = t;
+        }
+
+        if (_settings.WindowWidth is double w && w >= 800 && _settings.WindowHeight is double h && h >= 600)
+        {
+            Width = w;
+            Height = h;
+        }
+
+        if (_settings.WindowState == WindowState.Maximized)
+        {
+            WindowState = WindowState.Maximized;
+        }
+    }
+
+    private void SaveWindowBounds()
+    {
+        if (WindowState == WindowState.Normal)
+        {
+            _settings.WindowLeft = Left;
+            _settings.WindowTop = Top;
+            _settings.WindowWidth = Width;
+            _settings.WindowHeight = Height;
+        }
+        _settings.WindowState = WindowState;
+    }
+
     private void OnClosing(object? sender, CancelEventArgs e)
     {
+        if (_isDownloadingQueue && _downloadQueue.Any(item => item.IsDownloading))
+        {
+            var result = MessageBox.Show(this, "下载进行中，确定退出？", "退出确认",
+                MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (result != MessageBoxResult.Yes)
+            {
+                e.Cancel = true;
+                return;
+            }
+
+            // 优雅停止：取消队列运行并逐项取消进行中的下载（保留 .tmp 以便重启后续传）。
+            _isPauseRequested = true;
+            _downloadQueueCancellationTokenSource?.Cancel();
+            foreach (var item in _downloadQueue.Where(item => item.IsDownloading))
+            {
+                CancelQueueItem(item);
+            }
+        }
+
         foreach (Window window in Application.Current.Windows)
         {
             if (window != this && window.IsLoaded)
                 window.Close();
         }
 
-        if (!_settings.PersistDownloadQueue)
+        SaveWindowBounds();
+        SaveSettings();
+        _titleCopiedHintCts?.Dispose();
+        _titleCopiedHintCts = null;
+
+        if (_settings.PersistDownloadQueue)
+        {
+            try
+            {
+                AtomicFile.WriteAllText(DownloadQueueFilePath, JsonSerializer.Serialize(
+                    _downloadQueue.Select(item => new DownloadQueueRecord
+                    {
+                        Title = item.Title,
+                        Url = item.Url,
+                        Type = item.Type,
+                        Quality = item.Quality,
+                        VideoId = item.VideoId,
+                        TargetPath = item.TargetPath,
+                        HasError = item.HasError
+                    }), FavoritesJsonOptions));
+            }
+            catch (Exception ex)
+            {
+                LogError("queue", "退出时保存下载队列失败", ex);
+            }
+        }
+        else
         {
             foreach (var item in _downloadQueue)
                 DeleteQueueItemTemporaryFile(item);
@@ -159,6 +265,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
+        RestoreWindowBounds();
         try
         {
             _cloudflareWindow ??= new CloudflareWindow(_settings.SiteHost) { Owner = this };
@@ -197,16 +304,103 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             HandleUiActionError("startup", "初始化失败", ex);
             InitSessionWithoutCf();
         }
+
+        // 孤儿临时文件清理：只删 7 天前且不被当前队列引用的 .tmp/.hls。
+        // 引用集合在 UI 线程构建（ObservableCollection 非线程安全），扫描放到后台线程。
+        string directory;
+        HashSet<string> referenced;
+        try
+        {
+            directory = EnsureDownloadDirectory();
+            referenced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in _downloadQueue)
+            {
+                if (string.IsNullOrWhiteSpace(item.TargetPath))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    referenced.Add(DownloadPathGuard.EnsureWithinDirectory(directory, item.TargetPath) + ".tmp");
+                }
+                catch
+                {
+                    // 路径非法则跳过，不参与引用集合。
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LogError("download", "孤儿临时文件清理准备失败", ex);
+            return;
+        }
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                CleanupOrphanTemporaryFiles(directory, referenced);
+            }
+            catch (Exception ex)
+            {
+                LogError("download", "孤儿临时文件清理失败", ex);
+            }
+        });
+    }
+
+    private void CleanupOrphanTemporaryFiles(string directory, HashSet<string> referenced)
+    {
+        var cutoff = DateTime.Now.AddDays(-7);
+        foreach (var tmp in Directory.EnumerateFiles(directory, "*.tmp", SearchOption.TopDirectoryOnly))
+        {
+            if (referenced.Contains(tmp))
+            {
+                continue;
+            }
+
+            try
+            {
+                if (File.GetLastWriteTime(tmp) < cutoff)
+                {
+                    File.Delete(tmp);
+                    LogInfo("download", $"已清理孤儿临时文件: {tmp}");
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                LogInfo("download", $"孤儿临时文件清理跳过: {tmp}; {ex.Message}");
+            }
+        }
+
+        foreach (var hlsDir in Directory.EnumerateDirectories(directory, "*.hls", SearchOption.TopDirectoryOnly))
+        {
+            var basePath = hlsDir[..^4];
+            if (referenced.Contains(basePath + ".tmp"))
+            {
+                continue;
+            }
+
+            try
+            {
+                if (Directory.GetLastWriteTime(hlsDir) < cutoff)
+                {
+                    Directory.Delete(hlsDir, recursive: true);
+                    LogInfo("download", $"已清理孤儿 HLS 目录: {hlsDir}");
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                LogInfo("download", $"孤儿 HLS 目录清理跳过: {hlsDir}; {ex.Message}");
+            }
+        }
     }
 
     private void InitSessionWithoutCf(IReadOnlyList<BrowserCookieRecord>? cookies = null, string? browserVersion = null)
     {
         _cloudflareWindow ??= new CloudflareWindow(_settings.SiteHost) { Owner = this };
         var effectiveCookies = cookies ?? [];
-        _httpClient?.Dispose();
-        _httpClient = new HanimeHttpClientFactory().Create(effectiveCookies, _settings.SiteHost, browserVersion);
-        _apiClient = new HanimeApiClient(_cloudflareWindow, _httpClient, _settings.SiteHost);
-        _downloadService = new DownloadService(_httpClient, _settings.SiteHost);
+        ReplaceHttpSession(effectiveCookies, browserVersion);
     }
 
     private async void VerifyButton_OnClick(object sender, RoutedEventArgs e)
@@ -252,12 +446,57 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _appState.CookieHeader = _cloudflareWindow.CookieHeader;
         _appState.BrowserVersion = _cloudflareWindow.BrowserVersion;
         await SaveCookieCacheAsync();
-        _httpClient?.Dispose();
-        _httpClient = new HanimeHttpClientFactory().Create(_appState.Cookies, _settings.SiteHost, _appState.BrowserVersion);
-        _apiClient = new HanimeApiClient(_cloudflareWindow, _httpClient, _settings.SiteHost);
-        _downloadService = new DownloadService(_httpClient, _settings.SiteHost);
+        ReplaceHttpSession(_appState.Cookies, _appState.BrowserVersion);
         _videoDetailsCache.Clear();
         _videoDetailsInFlight.Clear();
+    }
+
+    /// <summary>
+    /// 替换 HttpClient 会话。下载进行中时旧客户端进入退役列表（在途下载用完后由队列循环释放），
+    /// 避免 Dispose 正在使用的 HttpClient 导致在途下载失败。
+    /// </summary>
+    private void ReplaceHttpSession(IReadOnlyList<BrowserCookieRecord> cookies, string? browserVersion)
+    {
+        var oldClient = _httpClient;
+        _httpClient = new HanimeHttpClientFactory().Create(cookies, _settings.SiteHost, browserVersion);
+        _apiClient = new HanimeApiClient(_cloudflareWindow!, _httpClient, _settings.SiteHost);
+        _downloadService = new DownloadService(_httpClient, _settings.SiteHost, CreateDownloadRetryPolicy(), _settings.SpeedLimitKBps);
+
+        if (oldClient is null)
+        {
+            return;
+        }
+
+        if (_isDownloadingQueue)
+        {
+            lock (_retiredHttpClients)
+            {
+                _retiredHttpClients.Add(oldClient);
+            }
+        }
+        else
+        {
+            oldClient.Dispose();
+        }
+    }
+
+    /// <summary>释放全部退役客户端（队列运行结束时调用）。</summary>
+    private void DisposeRetiredHttpClients()
+    {
+        lock (_retiredHttpClients)
+        {
+            foreach (var client in _retiredHttpClients)
+            {
+                client.Dispose();
+            }
+            _retiredHttpClients.Clear();
+        }
+    }
+
+    private DownloadRetryPolicy CreateDownloadRetryPolicy()
+    {
+        // MaxAttempts 含首次尝试；0 = 不重试 → 最少 1 次尝试。
+        return new DownloadRetryPolicy(maxAttempts: Math.Clamp(_settings.MaxRetries + 1, 1, 9));
     }
 
     private async Task SyncCachedCookiesToBrowserAsync(IReadOnlyList<BrowserCookieRecord> cookies)
@@ -297,28 +536,35 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         var distinctItems = itemsToRefresh
+            .Where(item => !item.IsDownloading)
             .GroupBy(item => item.VideoId, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .ToList();
 
         StatusText.Text = $"正在为 {distinctItems.Count} 个队列项重新获取下载链接...";
         var refreshed = 0;
-        foreach (var item in distinctItems)
+        var refreshGate = new SemaphoreSlim(2);
+        var tasks = distinctItems.Select(async item =>
         {
+            await refreshGate.WaitAsync();
             try
             {
                 var match = await ResolveQueueItemSourceAsync(item);
-                if (match is null)
+                if (match is not null)
                 {
-                    continue;
+                    Interlocked.Increment(ref refreshed);
                 }
-
-                refreshed++;
             }
-            catch
+            catch (Exception ex)
             {
+                LogError("queue", $"会话恢复后刷新队列链接失败: videoId={item.VideoId}", ex);
             }
-        }
+            finally
+            {
+                refreshGate.Release();
+            }
+        }).ToArray();
+        await Task.WhenAll(tasks);
 
         await TrySaveDownloadQueueAsync("queue", "保存下载队列失败");
         StatusText.Text = $"已为 {refreshed}/{distinctItems.Count} 个队列项刷新下载链接。";
@@ -333,8 +579,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         return ex.Message.Contains("Cloudflare", StringComparison.OrdinalIgnoreCase) ||
                ex.Message.Contains("cf_clearance", StringComparison.OrdinalIgnoreCase) ||
-               ex.Message.Contains("challenge", StringComparison.OrdinalIgnoreCase) ||
-               ex.Message.Contains("403", StringComparison.OrdinalIgnoreCase);
+               ex.Message.Contains("HTTP 403", StringComparison.OrdinalIgnoreCase) ||
+               ex.Message.Contains("status=403", StringComparison.OrdinalIgnoreCase) ||
+               ex.Message.Contains("403 (Forbidden)", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>判断 URL 是否属于当前站点（而非媒体 CDN 等外部域名）。</summary>
+    private bool IsSiteHostUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        return string.Equals(uri.Host, _settings.SiteHost, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(uri.Host, $"www.{_settings.SiteHost}", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<bool> EnsureVerifiedSessionAsync(string reason, CancellationToken cancellationToken = default)
@@ -395,7 +654,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         try
         {
             var keyword = GetSearchKeyword();
-            var directVideoMatch = VideoLinkRegex.Match(keyword);
+            var directVideoMatch = BuildVideoLinkRegex().Match(keyword);
             var isNumericId = !directVideoMatch.Success && System.Text.RegularExpressions.Regex.IsMatch(keyword.Trim(), @"^\d+$");
             if (directVideoMatch.Success || isNumericId)
             {
@@ -430,7 +689,79 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         e.Handled = true;
+        CloseSearchHistoryPopup();
         SearchButton_OnClick(sender, new RoutedEventArgs());
+    }
+
+    private void AddSearchHistory(string keyword)
+    {
+        if (string.IsNullOrWhiteSpace(keyword))
+        {
+            return;
+        }
+
+        _settings.SearchHistory.RemoveAll(item => string.Equals(item, keyword, StringComparison.OrdinalIgnoreCase));
+        _settings.SearchHistory.Insert(0, keyword);
+        if (_settings.SearchHistory.Count > 20)
+        {
+            _settings.SearchHistory = _settings.SearchHistory.Take(20).ToList();
+        }
+        SaveSettings();
+    }
+
+    private void SearchBox_OnGotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        ShowSearchHistoryPopup();
+    }
+
+    private void SearchBox_OnLostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        // 延迟关闭，让点击历史项先于失焦处理。
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+        {
+            if (SearchHistoryPopup.IsOpen && !SearchHistoryList.IsKeyboardFocusWithin && !SearchBox.IsKeyboardFocusWithin)
+            {
+                CloseSearchHistoryPopup();
+            }
+        }));
+    }
+
+    private void ShowSearchHistoryPopup()
+    {
+        if (_settings.SearchHistory.Count == 0 || string.IsNullOrWhiteSpace(SearchBox.Text))
+        {
+            CloseSearchHistoryPopup();
+            return;
+        }
+
+        SearchHistoryList.ItemsSource = _settings.SearchHistory.ToList();
+        SearchHistoryPopup.PlacementTarget = SearchBox;
+        SearchHistoryPopup.IsOpen = true;
+    }
+
+    private void CloseSearchHistoryPopup()
+    {
+        SearchHistoryPopup.IsOpen = false;
+    }
+
+    private void SearchHistoryItem_OnMouseLeftButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (SearchHistoryList.SelectedItem is string keyword)
+        {
+            SearchBox.Text = keyword;
+            CloseSearchHistoryPopup();
+            SearchButton_OnClick(sender, new RoutedEventArgs());
+        }
+    }
+
+    private void SearchHistoryItem_OnMouseRightButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (SearchHistoryList.SelectedItem is string keyword)
+        {
+            _settings.SearchHistory.Remove(keyword);
+            SaveSettings();
+            SearchHistoryList.ItemsSource = _settings.SearchHistory.ToList();
+        }
     }
 
     private string GetSearchKeyword()
@@ -450,6 +781,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         Canvas.SetLeft(TitleCopiedHint, pos.X);
         TitleCopiedHint.Visibility = Visibility.Visible;
         _titleCopiedHintCts?.Cancel();
+        _titleCopiedHintCts?.Dispose();
         _titleCopiedHintCts = new CancellationTokenSource();
         var cts = _titleCopiedHintCts;
         try { await Task.Delay(1500, cts.Token); } catch (OperationCanceledException) { return; }
@@ -541,6 +873,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _settings.CustomSiteHosts = dialog.Settings.CustomSiteHosts.ToList();
             _settings.PersistDownloadQueue = dialog.Settings.PersistDownloadQueue;
             _settings.MaxConcurrentDownloads = Math.Clamp(dialog.Settings.MaxConcurrentDownloads, 1, 3);
+            _settings.MaxRetries = Math.Clamp(dialog.Settings.MaxRetries, 0, 8);
+            _settings.SpeedLimitKBps = Math.Max(0, dialog.Settings.SpeedLimitKBps);
+            if (_downloadService is not null)
+            {
+                _downloadService.SpeedLimitKBps = _settings.SpeedLimitKBps;
+            }
             _settings.VideoDetailsVisibility = dialog.Settings.VideoDetailsVisibility;
             AppThemeService.Apply(Application.Current, _settings.ThemeMode);
             SaveSettings();
@@ -695,7 +1033,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (IsVideoFavorited(summary.VideoId))
         {
-            RemoveVideoFromFavorites(summary.VideoId);
+            // 确认后才从所有收藏夹移除（此前是静默全局移除，用户容易误删）。
+            var result = MessageBox.Show(this, "该视频已在收藏夹中，要从所有收藏夹移除吗？", "取消收藏",
+                MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (result == MessageBoxResult.Yes)
+            {
+                RemoveVideoFromFavorites(summary.VideoId);
+            }
             return;
         }
 
@@ -1543,6 +1887,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         openFolderItem.Click += (_, _) => OpenHistoryItemFolder(selectedHistoryItems[0]);
         menu.Items.Add(openFolderItem);
 
+        menu.Items.Add(new Separator());
+        var deleteItem = new MenuItem { Header = "删除该条" };
+        deleteItem.Click += async (_, _) =>
+        {
+            foreach (var item in selectedHistoryItems.ToList())
+            {
+                _historyItems.Remove(item);
+            }
+            await TrySaveDownloadHistoryAsync("history", "保存下载历史失败");
+            RefreshHistoryView();
+            StatusText.Text = $"已删除 {selectedHistoryItems.Count} 条历史记录。";
+        };
+        menu.Items.Add(deleteItem);
+
         menu.PlacementTarget = HistoryList;
         menu.Placement = PlacementMode.MousePoint;
         menu.IsOpen = true;
@@ -1602,7 +1960,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 NotifyDownloadQueueChanged();
                 UpdateDownloadQueueControlUi();
-                StatusText.Text = _isDownloadingQueue ? "已加入下载队列，但队列保存失败。" : "已加入下载队列，但队列保存失败。";
+                StatusText.Text = "已加入下载队列，但队列保存失败。";
                 return;
             }
 
@@ -1614,7 +1972,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             if (startImmediately && !_isDownloadingQueue)
             {
-                await StartQueueDownloadAsync();
+                // 只下载刚加入的这一项，不拉起整个队列。
+                await StartQueueDownloadAsync(new[] { queueItem });
             }
         }
         catch (Exception ex)
@@ -1875,10 +2234,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (_apiClient is null) InitSessionWithoutCf();
 
-        if (string.IsNullOrWhiteSpace(_currentSearchKeyword))
-        {
-        }
-
         _isSearching = true;
         SearchButton.IsEnabled = false;
         PreviousPageButton.IsEnabled = false;
@@ -1910,6 +2265,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _totalPages = searchPage.TotalPages;
             UpdatePageNavigationUi();
             LeftTabControl.SelectedIndex = 0;
+            AddSearchHistory(_currentSearchKeyword);
             StatusText.Text = _searchFilters.HasActiveFilters
                 ? $"搜索完成，第 {_currentPage} 页，共 {searchPage.Results.Count} 条结果，已应用筛选。"
                 : $"搜索完成，第 {_currentPage} 页，共 {searchPage.Results.Count} 条结果。";
@@ -1929,7 +2285,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         catch (Exception ex)
         {
             _searchResults.Clear();
-            StatusText.Text = ex.Message.Length > 60 ? "搜索失败：未解析到结果。" : $"搜索失败: {ex.Message}";
+            // ParseSearchResult 的"未解析到结果"消息以固定前缀开头；其他异常显示真实消息（不再靠长度启发式误伤）。
+            var isParseEmpty = ex is InvalidOperationException && ex.Message.StartsWith("搜索页已打开", StringComparison.OrdinalIgnoreCase);
+            StatusText.Text = isParseEmpty ? "搜索失败：未解析到结果。" : $"搜索失败: {ex.Message}";
+            LogError("search", "搜索失败", ex);
         }
         finally
         {
@@ -1965,7 +2324,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         SourcesSummaryText.Text = "正在读取详情与视频源...";
         StatusText.Text = $"正在读取 {requestedVideoId} 的详情...";
         ResetDetailsView("正在加载视频信息...");
-        SourcesSummaryText.Text = "正在读取详情与视频源...";
 
         try
         {
@@ -2427,12 +2785,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _settings.FileNamingRule = string.IsNullOrWhiteSpace(loaded.FileNamingRule) ? _settings.FileNamingRule : loaded.FileNamingRule;
             _settings.ShowListCovers = loaded.ShowListCovers;
             _settings.CompactMode = loaded.CompactMode;
-            _settings.DefaultQuality = string.IsNullOrWhiteSpace(loaded.DefaultQuality) ? _settings.DefaultQuality : loaded.DefaultQuality;
+            _settings.DefaultQuality = loaded.DefaultQuality is "highest" or "lowest" or "720" or "480"
+                ? loaded.DefaultQuality
+                : _settings.DefaultQuality;
             _settings.ThemeMode = AppThemeService.Normalize(loaded.ThemeMode);
             _settings.SiteHost = string.IsNullOrWhiteSpace(loaded.SiteHost) ? _settings.SiteHost : loaded.SiteHost;
             _settings.CustomSiteHosts = loaded.CustomSiteHosts?.Where(host => !string.IsNullOrWhiteSpace(host)).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
             _settings.PersistDownloadQueue = loaded.PersistDownloadQueue;
             _settings.MaxConcurrentDownloads = Math.Clamp(loaded.MaxConcurrentDownloads, 1, 3);
+            _settings.MaxRetries = Math.Clamp(loaded.MaxRetries, 0, 8);
+            _settings.SpeedLimitKBps = Math.Max(0, loaded.SpeedLimitKBps);
+            if (string.IsNullOrWhiteSpace(_settings.FileNamingRule) || !_settings.FileNamingRule.Contains('{'))
+            {
+                _settings.FileNamingRule = "{title}_{videoId}";
+                AddStartupWarning("文件命名规则不含占位符，已重置为 {title}_{videoId}");
+            }
             _settings.VideoDetailsVisibility = loaded.VideoDetailsVisibility ?? _settings.VideoDetailsVisibility;
             _settings.PlayerWindow = loaded.PlayerWindow ?? _settings.PlayerWindow;
         }
@@ -2476,7 +2843,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task SaveCookieCacheAsync()
     {
-        await File.WriteAllTextAsync(GetCookieCacheFilePath(), JsonSerializer.Serialize(_appState.Cookies, FavoritesJsonOptions));
+        await AtomicFile.WriteAllTextAsync(GetCookieCacheFilePath(), JsonSerializer.Serialize(_appState.Cookies, FavoritesJsonOptions));
     }
 
     private IReadOnlyList<BrowserCookieRecord> LoadCookieCache()
@@ -2516,7 +2883,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void SaveSettings()
     {
         NormalizePlayerWindowSettings();
-        File.WriteAllText(SettingsFilePath, JsonSerializer.Serialize(_settings, FavoritesJsonOptions));
+        AtomicFile.WriteAllText(SettingsFilePath, JsonSerializer.Serialize(_settings, FavoritesJsonOptions));
     }
 
     private void NormalizePlayerWindowSettings()
@@ -2576,6 +2943,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void LoadDownloadHistory()
     {
         _historyItems.Clear();
+        _historyVideoIds.Clear();
         if (!File.Exists(DownloadHistoryFilePath))
         {
             return;
@@ -2586,7 +2954,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             var items = JsonSerializer.Deserialize<List<string>>(File.ReadAllText(DownloadHistoryFilePath)) ?? [];
             foreach (var item in items.Where(item => !string.IsNullOrWhiteSpace(item)))
             {
-                _historyItems.Add(DownloadHistoryItem.FromRawText(item));
+                var historyItem = DownloadHistoryItem.FromRawText(item);
+                _historyItems.Add(historyItem);
+                var match = BuildVideoLinkRegex().Match(historyItem.Url);
+                if (match.Success)
+                {
+                    _historyVideoIds.Add(match.Groups[1].Value);
+                }
             }
         }
         catch (Exception ex)
@@ -2594,6 +2968,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             LogError("startup", $"读取下载历史失败: {DownloadHistoryFilePath}", ex);
             AddStartupWarning("下载历史读取失败，已清空历史列表");
             _historyItems.Clear();
+            _historyVideoIds.Clear();
         }
     }
 
@@ -2610,6 +2985,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             var items = JsonSerializer.Deserialize<List<DownloadQueueRecord>>(File.ReadAllText(DownloadQueueFilePath)) ?? [];
             foreach (var item in items.Where(item => !string.IsNullOrWhiteSpace(item.Title) && !string.IsNullOrWhiteSpace(item.VideoId)))
             {
+                // 失败状态持久化：重启后仍显示为失败，而不是静默变回等待。
                 _downloadQueue.Add(new DownloadQueueItem
                 {
                     Title = item.Title,
@@ -2618,8 +2994,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     Quality = item.Quality,
                     VideoId = item.VideoId,
                     TargetPath = item.TargetPath,
-                    StageText = "等待",
-                    QueueStatusText = "等待中"
+                    StageText = item.HasError ? "失败" : "等待",
+                    QueueStatusText = item.HasError ? "失败" : "等待中",
+                    QueueState = item.HasError ? DownloadQueueState.Error : DownloadQueueState.Waiting,
+                    HasError = item.HasError
                 });
             }
         }
@@ -2637,12 +3015,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             item => item.Key,
             item => GetFavoriteRecords(item.Value),
             StringComparer.OrdinalIgnoreCase);
-        File.WriteAllText(FavoritesFilePath, JsonSerializer.Serialize(exportData, FavoritesJsonOptions));
+        AtomicFile.WriteAllText(FavoritesFilePath, JsonSerializer.Serialize(exportData, FavoritesJsonOptions));
     }
 
     private async Task SaveDownloadHistoryAsync()
     {
-        await File.WriteAllTextAsync(DownloadHistoryFilePath, JsonSerializer.Serialize(_historyItems.Select(item => item.RawText), FavoritesJsonOptions));
+        // 按视频页 URL 去重并截断到 2000 条，避免历史无限增长。
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var pruned = _historyItems
+            .Where(item => !string.IsNullOrWhiteSpace(item.Url) && seen.Add(item.Url))
+            .Take(2000)
+            .ToList();
+        await AtomicFile.WriteAllTextAsync(DownloadHistoryFilePath, JsonSerializer.Serialize(pruned.Select(item => item.RawText), FavoritesJsonOptions));
     }
 
     private bool TrySaveFavorites(string category, string failureMessage)
@@ -2730,9 +3114,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Type = item.Type,
             Quality = item.Quality,
             VideoId = item.VideoId,
-            TargetPath = item.TargetPath
+            TargetPath = item.TargetPath,
+            HasError = item.HasError
         }).ToList();
-        await File.WriteAllTextAsync(DownloadQueueFilePath, JsonSerializer.Serialize(items, FavoritesJsonOptions));
+        await AtomicFile.WriteAllTextAsync(DownloadQueueFilePath, JsonSerializer.Serialize(items, FavoritesJsonOptions));
     }
 
     private async Task<bool> TrySaveDownloadQueueAsync(string category, string failureMessage)
@@ -3008,6 +3393,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _favoritesView.Filter = MatchesFavoriteFilter;
             _favoritesView.Refresh();
         }
+        PrimeThumbnails(favorites);
     }
 
     private void RefreshHistoryView()
@@ -3123,14 +3509,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        // 一次性加载全部封面（搜索结果通常几十张，开销不大，无需分批）。
         foreach (var item in items)
         {
             _ = PrimeThumbnailAsync(item);
         }
-    }
-
-    private void FavoritesList_OnScrollChanged(object sender, ScrollChangedEventArgs e)
-    {
     }
 
     private void UpdatePageNavigationUi()
@@ -3289,29 +3672,46 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             InitSessionWithoutCf();
         }
 
-        var extension = source.Type.Contains("m3u8", StringComparison.OrdinalIgnoreCase) ? ".m3u8" : ".mp4";
-        var downloadDirectory = EnsureDownloadDirectory();
+        // 路径准备不再逃逸异常：失败只影响当前项，不会中止整个队列运行。
+        string downloadDirectory;
+        string targetPath;
         var videoId = queueItem?.VideoId;
         if (string.IsNullOrWhiteSpace(videoId))
         {
             videoId = _currentDetailsVideoId;
         }
 
-        var targetPath = CreateQueueTargetPath(title, source.Type, videoId, source.Quality);
-        if (queueItem is not null && !string.IsNullOrWhiteSpace(queueItem.TargetPath))
+        try
         {
-            try
+            downloadDirectory = EnsureDownloadDirectory();
+            targetPath = CreateQueueTargetPath(title, source.Type, videoId, source.Quality);
+            if (queueItem is not null && !string.IsNullOrWhiteSpace(queueItem.TargetPath))
             {
-                targetPath = DownloadPathGuard.EnsureWithinDirectory(downloadDirectory, queueItem.TargetPath);
+                try
+                {
+                    targetPath = DownloadPathGuard.EnsureWithinDirectory(downloadDirectory, queueItem.TargetPath);
+                }
+                catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException)
+                {
+                    LogInfo("download", $"队列目标路径不在下载目录内，已重新生成: {queueItem.TargetPath}; {ex.Message}");
+                }
             }
-            catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException)
+            if (queueItem is not null && !string.Equals(queueItem.TargetPath, targetPath, StringComparison.OrdinalIgnoreCase))
             {
-                LogInfo("download", $"队列目标路径不在下载目录内，已重新生成: {queueItem.TargetPath}; {ex.Message}");
+                queueItem.TargetPath = targetPath;
             }
         }
-        if (queueItem is not null && !string.Equals(queueItem.TargetPath, targetPath, StringComparison.OrdinalIgnoreCase))
+        catch (Exception ex)
         {
-            queueItem.TargetPath = targetPath;
+            LogError("download", "准备下载路径失败", ex);
+            StatusText.Text = $"下载失败: {ex.Message}";
+            if (queueItem is not null)
+            {
+                SetQueueItemVisualState(queueItem, DownloadQueueState.Error, "失败", "下载失败");
+                _queueRunCurrentProgress = 0;
+                UpdateQueueRuntimeSummaryUi();
+            }
+            return false;
         }
 
         try
@@ -3342,6 +3742,43 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 _queueRunCurrentProgress = 0;
                 UpdateQueueRuntimeSummaryUi();
             }
+
+            // 探测链接（校验可达性 + 获取文件大小）；失败不阻塞下载。
+            long? requiredBytes = null;
+            try
+            {
+                var probe = await downloadService.ProbeAsync(source.Url, cancellationToken);
+                requiredBytes = probe.ContentLength;
+                LogInfo("download", $"链接探测: type={probe.ContentType}, length={probe.ContentLength}, partial={probe.IsPartial}");
+            }
+            catch (Exception probeEx)
+            {
+                LogInfo("download", $"链接探测失败，继续尝试下载: {probeEx.Message}");
+            }
+
+            // 磁盘空间预检：可用空间不足时直接失败，不留下临时文件。
+            try
+            {
+                var drive = new DriveInfo(Path.GetPathRoot(targetPath)!);
+                if (drive.IsReady && requiredBytes is > 0 &&
+                    drive.AvailableFreeSpace < requiredBytes.Value + 64L * 1024 * 1024)
+                {
+                    if (queueItem is not null)
+                    {
+                        SetQueueItemVisualState(queueItem, DownloadQueueState.Error, "失败", "磁盘空间不足");
+                        _queueRunCurrentProgress = 0;
+                        UpdateQueueRuntimeSummaryUi();
+                    }
+                    StatusText.Text = $"下载失败: 磁盘空间不足（可用 {FormatBytes(drive.AvailableFreeSpace)}，需要约 {FormatBytes(requiredBytes.Value)}）。";
+                    LogError("download", $"磁盘空间不足: {targetPath}");
+                    return false;
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                LogInfo("download", $"磁盘空间预检跳过: {ex.Message}");
+            }
+
             if (queueItem is not null)
             {
                 SetQueueItemVisualState(queueItem, DownloadQueueState.Downloading, "下载", "准备下载", showProgress: true, progressValue: 0);
@@ -3351,10 +3788,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             StatusText.Text = $"正在下载到: {targetPath}";
             var lastQueueProgressText = string.Empty;
-            var lastProgressBucket = -1;
             var progress = new Progress<DownloadProgressInfo>(info =>
             {
-                var speedText = info.BytesPerSecond > 0 ? $"{FormatBytes((long)info.BytesPerSecond)}/s" : string.Empty;
+                var displaySpeed = info.InstantBytesPerSecond > 0 ? info.InstantBytesPerSecond : info.BytesPerSecond;
+                var speedText = displaySpeed > 0 ? $"{FormatBytes((long)displaySpeed)}/s" : string.Empty;
                 var remainingText = info.EstimatedRemaining is TimeSpan remaining ? $"剩余 {FormatDuration(remaining)}" : string.Empty;
 
                 if (queueItem is not null)
@@ -3377,21 +3814,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     UpdateQueueRuntimeSummaryUi();
                 }
 
-                if (info.Percentage is double percentage)
-                {
-                    var bucket = (int)(percentage * 2);
-                    if (bucket == lastProgressBucket)
-                    {
-                        return;
-                    }
-
-                    lastProgressBucket = bucket;
-                    return;
-                }
-
             });
 
-            await downloadService.DownloadAsync(source.Url, targetPath, progress, cancellationToken);
+            await downloadService.DownloadAsync(source.Url, targetPath, progress, source.Type, cancellationToken);
             if (queueItem is not null)
             {
                 SetQueueItemVisualState(queueItem, DownloadQueueState.Finalizing, "收尾", "写入历史", showProgress: true, progressValue: 100);
@@ -3401,6 +3826,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             var historyUrl = !string.IsNullOrWhiteSpace(queueItem?.VideoId)
                 ? $"https://{_settings.SiteHost}/watch?v={queueItem.VideoId}"
                 : source.Url;
+            if (!string.IsNullOrWhiteSpace(queueItem?.VideoId))
+            {
+                _historyVideoIds.Add(queueItem.VideoId);
+            }
             _historyItems.Insert(0, DownloadHistoryItem.Create(DateTime.Now, Path.GetFileName(targetPath), historyUrl, targetPath));
             LogInfo("download", $"下载完成: {targetPath}");
             if (!await TrySaveDownloadHistoryAsync("history", "保存下载历史失败"))
@@ -3414,6 +3843,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             StatusText.Text = $"下载完成: {targetPath}";
             return true;
         }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            // HttpClient 超时等非用户取消的中断：真正的失败，而非"暂停"。
+            if (queueItem is not null)
+            {
+                SetQueueItemVisualState(queueItem, DownloadQueueState.Error, "失败", "下载失败");
+                _queueRunCurrentProgress = 0;
+                UpdateQueueRuntimeSummaryUi();
+            }
+            StatusText.Text = "下载失败: 下载超时或连接中断。";
+            LogError("download", $"下载超时/中断: {targetPath}", ex);
+            return false;
+        }
         catch (OperationCanceledException)
         {
             if (queueItem is not null)
@@ -3426,7 +3868,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             LogInfo("download", $"下载已暂停: {targetPath}");
             return false;
         }
-        catch (Exception ex) when (IsCloudflareSessionError(ex))
+        catch (Exception ex) when (IsCloudflareSessionError(ex) && IsSiteHostUrl(source.Url))
         {
             if (queueItem is not null)
             {
@@ -3441,6 +3883,64 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 if (refreshed is not null)
                 {
                     return await DownloadSourceAsync(refreshed, queueItem.Title, cancellationToken, queueItem, isRetry: true);
+                }
+            }
+            StatusText.Text = $"下载失败: {ex.Message}";
+            LogError("download", $"下载失败: {targetPath}", ex);
+            return false;
+        }
+        catch (Exception ex) when (ex is HttpRequestException { StatusCode: HttpStatusCode.Forbidden or HttpStatusCode.Gone } && !IsSiteHostUrl(source.Url))
+        {
+            // 媒体 CDN（vdownload.hembed.com 等）的 403/410 通常是签名过期，与 Cloudflare 会话无关：
+            // 不触发重验，直接强制刷新视频源（绕过 HTML 缓存拿新 token）后按重试策略重试。
+            if (!isRetry)
+            {
+                StatusText.Text = "媒体链接已过期，正在重新解析视频源...";
+                LogInfo("download", $"媒体链接过期（{(ex as HttpRequestException)?.StatusCode}），重新解析源: {source.Url}");
+                try
+                {
+                    return await CreateDownloadRetryPolicy().ExecuteAsync(async (_, token) =>
+                    {
+                        VideoSource? refreshed;
+                        if (queueItem is not null)
+                        {
+                            refreshed = await ResolveQueueItemSourceAsync(queueItem, token, forceRefresh: true);
+                        }
+                        else if (!string.IsNullOrWhiteSpace(videoId))
+                        {
+                            var details = await GetOrLoadVideoDetailsAsync(videoId, VideoDetailsLoadOptions.Basic | VideoDetailsLoadOptions.Sources, token, forceRefresh: true);
+                            refreshed = details?.Sources.OrderByDescending(item => item.Quality).FirstOrDefault();
+                        }
+                        else
+                        {
+                            refreshed = null;
+                        }
+
+                        if (refreshed is null)
+                        {
+                            // StatusCode 为空 → 触发策略重试。
+                            throw new HttpRequestException("重新解析视频源失败，未拿到可用链接。", null, null);
+                        }
+
+                        var downloaded = await DownloadSourceAsync(refreshed, queueItem?.Title ?? title, token, queueItem, isRetry: true);
+                        if (!downloaded && !token.IsCancellationRequested)
+                        {
+                            throw new IOException("重新解析后的下载仍然失败。");
+                        }
+
+                        return downloaded;
+                    }, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    if (queueItem is not null)
+                    {
+                        SetQueueItemVisualState(queueItem, DownloadQueueState.Paused, "暂停", "已暂停", showProgress: true, progressValue: queueItem.ProgressValue);
+                        _queueRunCurrentProgress = queueItem.ProgressValue ?? _queueRunCurrentProgress;
+                        UpdateQueueRuntimeSummaryUi();
+                    }
+                    StatusText.Text = "下载已暂停。";
+                    return false;
                 }
             }
             StatusText.Text = $"下载失败: {ex.Message}";
@@ -3605,11 +4105,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private async Task QueueVideosForDownloadAsync(IEnumerable<VideoSummary> videos)
     {
         var added = 0;
+        var alreadyInHistory = 0;
         foreach (var video in videos)
         {
             if (HasQueueItem(video.VideoId, 0))
             {
                 continue;
+            }
+
+            if (_historyVideoIds.Contains(video.VideoId))
+            {
+                alreadyInHistory++;
             }
 
             _downloadQueue.Add(new DownloadQueueItem
@@ -3628,7 +4134,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         await TrySaveDownloadQueueAsync("queue", "保存下载队列失败");
         UpdateDownloadQueueControlUi();
-        StatusText.Text = $"已加入下载队列 {added} 项。";
+        StatusText.Text = alreadyInHistory > 0
+            ? $"已加入下载队列 {added} 项（其中 {alreadyInHistory} 项已在下载历史中）。"
+            : $"已加入下载队列 {added} 项。";
     }
 
     private VideoSource? SelectSourceByQuality(IReadOnlyList<VideoSource>? sources)
@@ -3664,8 +4172,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         LogInfo("queue", $"[{operationId}] 解析队列项源: videoId={item.VideoId}, quality={item.Quality}, forceRefresh={forceRefresh}");
-        var details = await GetOrLoadVideoDetailsAsync(item.VideoId, cancellationToken: cancellationToken, forceRefresh: forceRefresh);
+        // 队列只需视频源：走 download 页轻量加载（~30KB），不拉包含相关视频/简介的 watch 页（~148KB）。
+        var details = await GetOrLoadVideoDetailsAsync(item.VideoId, VideoDetailsLoadOptions.Basic | VideoDetailsLoadOptions.Sources, cancellationToken, forceRefresh);
         cancellationToken.ThrowIfCancellationRequested();
+        var requestedQuality = item.Quality;
         var source = SelectSourceForQueueItem(details?.Sources, item);
         if (source is null)
         {
@@ -3673,10 +4183,37 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return null;
         }
 
+        if (requestedQuality > 0 && source.Quality != requestedQuality)
+        {
+            // 请求的清晰度不存在：就近回退并明确提示，不再静默。
+            LogInfo("queue", $"[{operationId}] 画质回退: videoId={item.VideoId}, {requestedQuality}p -> {source.Quality}p");
+            item.QueueStatusText = $"等待中（画质回退 {requestedQuality}p→{source.Quality}p）";
+        }
+
         item.Title = string.IsNullOrWhiteSpace(details?.Title) ? item.Title : details!.Title;
         item.Url = source.Url;
         item.Type = source.Type;
         item.Quality = source.Quality;
+
+        // 批量入队的项入队时 Quality=0，{quality} 命名会渲染成 unknown；解析出真实画质后刷新目标路径。
+        if (_settings.FileNamingRule.Contains("{quality}", StringComparison.OrdinalIgnoreCase) &&
+            item.TargetPath.Contains("unknown", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var regenerated = CreateQueueTargetPath(item.Title, item.Type, item.VideoId, item.Quality);
+                if (!string.Equals(regenerated, item.TargetPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    item.TargetPath = regenerated;
+                    LogInfo("queue", $"[{operationId}] 画质已确定，更新目标路径: {item.TargetPath}");
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError("queue", $"重新生成目标路径失败，保持原路径: {item.TargetPath}", ex);
+            }
+        }
+
         _reResolveItems.Remove(item);
         LogInfo("queue", $"[{operationId}] 队列项源解析完成: videoId={item.VideoId}, selectedQuality={item.Quality}, type={item.Type}");
         return source;
@@ -3751,7 +4288,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         // Use CancellationToken.None so the shared task is not tied to any single caller's token
-        var detailsTask = apiClient.GetDetailsAsync(videoId, loadOptions, CancellationToken.None);
+        var detailsTask = apiClient.GetDetailsAsync(videoId, loadOptions, CancellationToken.None, forceRefresh);
         _videoDetailsInFlight[cacheKey] = detailsTask;
         try
         {
@@ -3842,13 +4379,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             while (true)
             {
-                foreach (var newItem in _downloadQueue)
+                if (!useSelection)
                 {
-                    if (!pendingItems.Contains(newItem) && !runningTasks.ContainsKey(newItem)
-                        && newItem.QueueState != DownloadQueueState.Completed
-                        && newItem.QueueState != DownloadQueueState.Error)
+                    // 全队列模式：运行中新增的队列项会被收养；选中模式（单视频下载/重新解析）不收养。
+                    foreach (var newItem in _downloadQueue)
                     {
-                        pendingItems.Add(newItem);
+                        if (!pendingItems.Contains(newItem) && !runningTasks.ContainsKey(newItem)
+                            && newItem.QueueState != DownloadQueueState.Completed
+                            && newItem.QueueState != DownloadQueueState.Error)
+                        {
+                            pendingItems.Add(newItem);
+                        }
                     }
                 }
 
@@ -3960,6 +4501,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _isPauseRequested = false;
             _downloadQueueCancellationTokenSource?.Dispose();
             _downloadQueueCancellationTokenSource = null;
+            DisposeRetiredHttpClients();
             if (_queueRunSummaryState == QueueRunSummaryState.Completed && _downloadQueue.Count == 0)
             {
                 ResetQueueRunSummaryState();
@@ -3983,7 +4525,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             VideoSource? source;
             try
             {
-                source = await ResolveQueueItemSourceAsync(item, queueCancellationToken, forceRefresh: _reResolveItems.Contains(item));
+                // 解析阶段的瞬时网络错误按重试策略重试；返回 null 仍走"无可用链接"。
+                source = await CreateDownloadRetryPolicy().ExecuteAsync(
+                    async (_, token) => await ResolveQueueItemSourceAsync(item, token, forceRefresh: _reResolveItems.Contains(item)),
+                    queueCancellationToken);
+            }
+            catch (OperationCanceledException) when (!queueCancellationToken.IsCancellationRequested)
+            {
+                // 解析阶段超时/断流：真正的失败，而非"暂停"。
+                SetQueueItemVisualState(item, DownloadQueueState.Error, "失败", "解析超时");
+                return QueueItemProcessResult.Error();
             }
             catch (OperationCanceledException)
             {
@@ -3992,16 +4543,30 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
             catch (Exception ex) when (IsCloudflareSessionError(ex))
             {
-                SetQueueItemVisualState(item, DownloadQueueState.Verifying, "重验", "等待重验", showProgress: true, isProgressIndeterminate: true);
-                UpdateQueueRuntimeSummaryUi();
-                var verified = await EnsureVerifiedSessionAsync("下载前遇到 Cloudflare 验证，正在打开验证窗口...", queueCancellationToken);
-                if (!verified)
+                try
                 {
-                    SetQueueItemVisualState(item, DownloadQueueState.Error, "失败", "验证失败");
+                    SetQueueItemVisualState(item, DownloadQueueState.Verifying, "重验", "等待重验", showProgress: true, isProgressIndeterminate: true);
+                    UpdateQueueRuntimeSummaryUi();
+                    var verified = await EnsureVerifiedSessionAsync("下载前遇到 Cloudflare 验证，正在打开验证窗口...", queueCancellationToken);
+                    if (!verified)
+                    {
+                        SetQueueItemVisualState(item, DownloadQueueState.Error, "失败", "验证失败");
+                        return QueueItemProcessResult.Error();
+                    }
+
+                    source = await ResolveQueueItemSourceAsync(item, queueCancellationToken);
+                }
+                catch (OperationCanceledException) when (queueCancellationToken.IsCancellationRequested)
+                {
+                    SetQueueItemVisualState(item, DownloadQueueState.Paused, "暂停", "已暂停", showProgress: true, progressValue: item.ProgressValue);
+                    return QueueItemProcessResult.Paused();
+                }
+                catch (Exception innerEx) when (innerEx is not OperationCanceledException)
+                {
+                    item.HasError = true;
+                    SetQueueItemVisualState(item, DownloadQueueState.Error, "失败", "重验后解析失败");
                     return QueueItemProcessResult.Error();
                 }
-
-                source = await ResolveQueueItemSourceAsync(item, queueCancellationToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -4022,7 +4587,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 return QueueItemProcessResult.Error();
             }
 
-            await downloadGate.WaitAsync(queueCancellationToken);
+            // 暂停时等待信号量不再逃逸异常：转为 Paused 结果，队列正常运行不中断。
+            try
+            {
+                await downloadGate.WaitAsync(queueCancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                SetQueueItemVisualState(item, DownloadQueueState.Paused, "暂停", "已暂停", showProgress: true, progressValue: item.ProgressValue);
+                return QueueItemProcessResult.Paused();
+            }
             try
             {
             SetQueueItemVisualState(item, DownloadQueueState.Downloading, "下载", "下载中", showProgress: true, progressValue: 0);
@@ -4331,7 +4905,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 InitSessionWithoutCf();
             }
 
-            var details = await GetOrLoadVideoDetailsAsync(summary.VideoId, GetActiveVideoDetailsLoadOptions());
+            // 播放只需要视频源：走 download 页轻量加载。
+            var details = await GetOrLoadVideoDetailsAsync(summary.VideoId, VideoDetailsLoadOptions.Basic | VideoDetailsLoadOptions.Sources);
             if (details is null)
             {
                 StatusText.Text = "读取详情失败。";
@@ -4442,7 +5017,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
         }
 
-        var match = VideoLinkRegex.Match(url);
+        var match = BuildVideoLinkRegex().Match(url);
         if (!match.Success)
         {
             return null;
@@ -4647,7 +5222,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private string CreateQueueTargetPath(string? title, string? type, string? videoId, int quality)
     {
-        var extension = !string.IsNullOrWhiteSpace(type) && type.Contains("m3u8", StringComparison.OrdinalIgnoreCase) ? ".m3u8" : ".mp4";
+        // HLS 会被合并为单个媒体文件，输出统一用 .mp4（与旧版行为一致）。
+        var extension = ".mp4";
         var downloadDirectory = EnsureDownloadDirectory();
         var fileName = BuildSuggestedFileName(title, extension, videoId, quality);
         return GetDownloadTargetPath(downloadDirectory, fileName);
@@ -4705,6 +5281,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         public int Quality { get; init; }
         public required string VideoId { get; init; }
         public string TargetPath { get; init; } = string.Empty;
+        public bool HasError { get; init; }
     }
 
     private sealed class QueueItemProcessResult

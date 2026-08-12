@@ -37,13 +37,7 @@ public partial class MultiSelectDialog : Window
 
     private void SearchBox_OnKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Enter)
-        {
-            DialogResult = true;
-            e.Handled = true;
-            return;
-        }
-
+        // 搜索框内按 Enter 不再提交对话框（之前会误确认整个标签选择）。
         if (e.Key == Key.Down && GroupHost.Children.Count > 0)
         {
             if (TryFocusFirstVisibleCheckBox())

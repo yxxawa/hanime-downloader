@@ -52,7 +52,7 @@ public partial class PlayerWindow : Window
             _isBrowserReady = true;
         }
 
-        var page = PlayerPageBuilder.Build(title, videoUrl, type, HlsScript.Value);
+        var page = PlayerPageBuilder.Build(title, videoUrl, type, HlsScript.Value, _settings.PlayerWindow.PlaybackPosition, _settings.PlayerWindow.Volume);
         Browser.NavigateToString(page);
         TitleText.Text = string.IsNullOrWhiteSpace(title) ? "播放" : title;
     }
@@ -101,11 +101,20 @@ public partial class PlayerWindow : Window
         var state = _settings.PlayerWindow;
         Width = state.Width > MinWidth ? state.Width : Width;
         Height = state.Height > MinHeight ? state.Height : Height;
+        // 恢复位置前做屏幕边界校验：显示器变更后不在可见范围则保持居中。
         if (state.Left.HasValue && state.Top.HasValue && double.IsFinite(state.Left.Value) && double.IsFinite(state.Top.Value))
         {
-            Left = state.Left.Value;
-            Top = state.Top.Value;
-            WindowStartupLocation = WindowStartupLocation.Manual;
+            var virtualBounds = new Rect(
+                SystemParameters.VirtualScreenLeft,
+                SystemParameters.VirtualScreenTop,
+                SystemParameters.VirtualScreenWidth,
+                SystemParameters.VirtualScreenHeight);
+            if (virtualBounds.Contains(new Point(state.Left.Value + 50, state.Top.Value + 20)))
+            {
+                Left = state.Left.Value;
+                Top = state.Top.Value;
+                WindowStartupLocation = WindowStartupLocation.Manual;
+            }
         }
         WindowState = state.WindowState;
     }
@@ -125,7 +134,53 @@ public partial class PlayerWindow : Window
         state.Left = double.IsFinite(left) ? left : null;
         state.Top = double.IsFinite(top) ? top : null;
 
+        SavePlaybackPosition();
         StopPlayback();
+    }
+
+    /// <summary>从播放页取回播放位置与音量（fire-and-forget，尽量保存）。</summary>
+    private void SavePlaybackPosition()
+    {
+        if (!_isBrowserReady || Browser.CoreWebView2 is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _ = Browser.CoreWebView2.ExecuteScriptAsync(
+                "JSON.stringify({ position: document.querySelector('video') ? document.querySelector('video').currentTime || 0 : 0, volume: document.querySelector('video') ? document.querySelector('video').volume : null })")
+                .ContinueWith(task =>
+                {
+                    if (task.IsCompletedSuccessfully && !string.IsNullOrWhiteSpace(task.Result))
+                    {
+                        try
+                        {
+                            var payload = task.Result.Trim('"').Replace("\\\"", "\"");
+                            var doc = System.Text.Json.JsonDocument.Parse(payload);
+                            var state = _settings.PlayerWindow;
+                            if (doc.RootElement.TryGetProperty("position", out var position) && position.TryGetDouble(out var seconds) && seconds > 3)
+                            {
+                                state.PlaybackPosition = seconds;
+                            }
+                            else
+                            {
+                                state.PlaybackPosition = null;
+                            }
+                            if (doc.RootElement.TryGetProperty("volume", out var volume) && volume.TryGetDouble(out var vol) && vol >= 0)
+                            {
+                                state.Volume = vol;
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }, TaskScheduler.Default);
+        }
+        catch
+        {
+        }
     }
 
     private void OnClosed(object? sender, EventArgs e)

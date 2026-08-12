@@ -264,7 +264,9 @@ public sealed partial class HanimeApiClient
     {
         var linkNode = FindLinkNode(node);
         var href = ReadLinkValue(linkNode ?? node);
-        if (!resolveHref && linkNode is not null)
+        // 仅当 node 不是链接节点本身（例如是卡片外层容器）时才收窄到链接的父容器；
+        // node 本身就是 <a> 卡片时保持原作用域，否则标题/封面会错误地取到整个列表容器的第一个元素。
+        if (!resolveHref && linkNode is not null && !ReferenceEquals(node, linkNode))
         {
             node = linkNode.ParentNode is not null && !IsLinkNode(linkNode.ParentNode)
                 ? linkNode.ParentNode
@@ -455,14 +457,31 @@ public sealed partial class HanimeApiClient
                !compact.Equals("观看", StringComparison.OrdinalIgnoreCase);
     }
 
-    public async Task<VideoDetails?> GetDetailsAsync(string videoId, VideoDetailsLoadOptions loadOptions = VideoDetailsLoadOptions.Basic | VideoDetailsLoadOptions.Sources, CancellationToken cancellationToken = default)
+    public async Task<VideoDetails?> GetDetailsAsync(string videoId, VideoDetailsLoadOptions loadOptions = VideoDetailsLoadOptions.Basic | VideoDetailsLoadOptions.Sources, CancellationToken cancellationToken = default, bool forceRefresh = false)
     {
-        var watchResponse = await FetchHtmlAsync($"watch?v={videoId}", cancellationToken);
+        var needsRichContent = loadOptions.HasFlag(VideoDetailsLoadOptions.RelatedVideos) ||
+                               loadOptions.HasFlag(VideoDetailsLoadOptions.Meta) ||
+                               loadOptions.HasFlag(VideoDetailsLoadOptions.Tags);
+        var needsSources = loadOptions.HasFlag(VideoDetailsLoadOptions.Sources);
+        var needsCover = loadOptions.HasFlag(VideoDetailsLoadOptions.Cover);
+
+        if (!needsRichContent && (needsSources || needsCover))
+        {
+            // 轻量路径：download 页（~30KB）就包含全部清晰度源 + 标题 + 封面，
+            // 只有需要相关视频/简介/标签时才必须加载 ~148KB 的 watch 页。
+            var parsed = await TryLoadFromDownloadPageAsync(videoId, loadOptions, cancellationToken, forceRefresh);
+            if (parsed is not null)
+            {
+                return parsed;
+            }
+        }
+
+        var watchResponse = await FetchHtmlAsync($"watch?v={videoId}", cancellationToken, forceRefresh);
         EnsureNotBlocked(watchResponse);
 
         BrowserFetchResult? downloadResponse = null;
         Task<BrowserFetchResult>? downloadTask = null;
-        if (loadOptions.HasFlag(VideoDetailsLoadOptions.Sources) && !HasEmbeddedSourceHint(watchResponse.Html))
+        if (needsSources && !HasEmbeddedSourceHint(watchResponse.Html))
         {
             // Start the fallback request while the watch-page DOM is parsed. The fallback is only
             // prefetched when the watch HTML has no source marker, avoiding an extra request for the
@@ -476,7 +495,7 @@ public sealed partial class HanimeApiClient
         }
 
         var parsedDetails = await Task.Run(() => ParseWatchDetails(videoId, watchResponse, loadOptions), cancellationToken);
-        if (loadOptions.HasFlag(VideoDetailsLoadOptions.Sources) && parsedDetails.Sources.Count == 0)
+        if (needsSources && parsedDetails.Sources.Count == 0)
         {
             downloadResponse = downloadTask is not null
                 ? await downloadTask
@@ -485,7 +504,7 @@ public sealed partial class HanimeApiClient
             parsedDetails = await Task.Run(() => MergeDownloadSources(parsedDetails, downloadResponse.Html), cancellationToken);
         }
 
-        if (loadOptions.HasFlag(VideoDetailsLoadOptions.Sources))
+        if (needsSources)
         {
             parsedDetails.Sources = parsedDetails.Sources
                 .DistinctBy(item => item.Url)
@@ -496,6 +515,75 @@ public sealed partial class HanimeApiClient
 
         parsedDetails.LoadOptions = loadOptions;
         return parsedDetails;
+    }
+
+    /// <summary>
+    /// 尝试仅用 download 页构建详情（源 + 标题 + 封面）。
+    /// 解析不到源时返回 null（由调用方回落 watch 页）；挑战/403 等异常直接传播，
+    /// 走与 watch 页相同的 Cloudflare 恢复流程，避免双重等待。
+    /// </summary>
+    private async Task<VideoDetails?> TryLoadFromDownloadPageAsync(string videoId, VideoDetailsLoadOptions loadOptions, CancellationToken cancellationToken, bool forceRefresh)
+    {
+        var downloadResponse = await FetchHtmlAsync($"download?v={videoId}", cancellationToken, forceRefresh);
+        EnsureNotBlocked(downloadResponse);
+
+        var details = new VideoDetails
+        {
+            VideoId = videoId,
+            Title = ParseDownloadPageTitle(downloadResponse.Title, videoId),
+            Url = $"{_siteBase}/watch?v={videoId}",
+            LoadOptions = loadOptions
+        };
+        AppendSourcesFromDownloadPage(details.Sources, downloadResponse.Html);
+
+        if (loadOptions.HasFlag(VideoDetailsLoadOptions.Cover))
+        {
+            var doc = new HtmlDocument();
+            doc.LoadHtml(downloadResponse.Html);
+            var coverNode = doc.DocumentNode.SelectSingleNode("//*[@property='og:image']")
+                            ?? doc.DocumentNode.SelectSingleNode("//meta[@name='og:image']");
+            details.CoverUrl = ExtractCoverUrl(coverNode);
+        }
+
+        if (details.Sources.Count == 0)
+        {
+            // 下载页未能解析到源（布局变化或异常页）：让调用方回落 watch 页。
+            Debug.WriteLine($"[details] download-page has no sources, fallback to watch: {videoId}");
+            return null;
+        }
+
+        details.Sources = details.Sources
+            .DistinctBy(item => item.Url)
+            .OrderByDescending(item => item.Quality)
+            .ThenBy(item => item.Type.Contains("mp4", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .ToList();
+        Debug.WriteLine($"[details] loaded from download page: {videoId} sources={details.Sources.Count} bytes={downloadResponse.Html.Length}");
+        AppLogger.InfoThrottled("details", $"轻量加载 download 页: {videoId} sources={details.Sources.Count} bytes={downloadResponse.Html.Length}", TimeSpan.FromSeconds(3));
+        return details;
+    }
+
+    /// <summary>清洗 download 页标题："下載 XXX - H動漫/裏番/線上看 - Hanime1.me" → "XXX"。</summary>
+    private static string ParseDownloadPageTitle(string? rawTitle, string videoId)
+    {
+        var title = HtmlEntity.DeEntitize(rawTitle ?? string.Empty).Trim();
+        // 站点标题中的分隔符是 &amp;nbsp;（ ），统一替换为普通空格后再处理。
+        title = title.Replace(' ', ' ');
+        if (title.StartsWith("下載 ", StringComparison.OrdinalIgnoreCase))
+        {
+            title = title[3..].Trim();
+        }
+        else if (title.StartsWith("下载 ", StringComparison.OrdinalIgnoreCase))
+        {
+            title = title[3..].Trim();
+        }
+
+        var separatorIndex = title.IndexOf(" - ", StringComparison.OrdinalIgnoreCase);
+        if (separatorIndex > 0)
+        {
+            title = title[..separatorIndex].Trim();
+        }
+
+        return ToDisplayText(title, $"视频 {videoId}");
     }
 
     private VideoDetails ParseWatchDetails(string videoId, BrowserFetchResult watchResponse, VideoDetailsLoadOptions loadOptions)
@@ -787,17 +875,17 @@ public sealed partial class HanimeApiClient
             Type = string.IsNullOrWhiteSpace(type)
                 ? (url.Contains("m3u8", StringComparison.OrdinalIgnoreCase) ? "application/x-mpegURL" : "video/mp4")
                 : type,
-            Quality = quality ?? ParseQualityFromText(url)
+            Quality = quality ?? ParseQualityFromText(url) ?? 0
         });
     }
 
-    private async Task<BrowserFetchResult> FetchHtmlAsync(string relativeUrl, CancellationToken cancellationToken)
+    private async Task<BrowserFetchResult> FetchHtmlAsync(string relativeUrl, CancellationToken cancellationToken, bool forceRefresh = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var targetUri = new Uri(_siteBaseUri, relativeUrl);
         var cacheKey = targetUri.AbsoluteUri;
         var now = DateTimeOffset.UtcNow;
-        if (_htmlCache.TryGetValue(cacheKey, out var cached) && cached.ExpiresAt > now)
+        if (!forceRefresh && _htmlCache.TryGetValue(cacheKey, out var cached) && cached.ExpiresAt > now)
         {
             Debug.WriteLine($"[html-cache] hit: {cacheKey}");
             return cached.Response;
@@ -859,14 +947,14 @@ public sealed partial class HanimeApiClient
                     Title = ExtractHtmlTitle(html)
                 };
 
-                if (response.IsSuccessStatusCode && !IsChallengePage(html))
+                if (response.IsSuccessStatusCode && !CloudflareDetection.IsChallengePage(html, result.Title))
                 {
                     Debug.WriteLine($"[html-http] {targetUri} status={(int)response.StatusCode} bytes={html.Length}");
                     return result;
                 }
 
                 DisableDirectHttp();
-                Debug.WriteLine($"[html-http] fallback to WebView2: {targetUri} status={(int)response.StatusCode} challenge={IsChallengePage(html)} cooldown={DirectHttpCooldown.TotalSeconds:0}s");
+                Debug.WriteLine($"[html-http] fallback to WebView2: {targetUri} status={(int)response.StatusCode} challenge={CloudflareDetection.IsChallengePage(html, result.Title)} cooldown={DirectHttpCooldown.TotalSeconds:0}s");
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
@@ -921,7 +1009,7 @@ public sealed partial class HanimeApiClient
     {
         return response.Status is >= 200 and < 300 &&
                !string.IsNullOrWhiteSpace(response.Html) &&
-               !IsChallengePage(response.Html);
+               !CloudflareDetection.IsChallengePage(response.Html, response.Title);
     }
 
     private static TimeSpan GetCacheDuration(string relativeUrl)
@@ -937,17 +1025,6 @@ public sealed partial class HanimeApiClient
         return match.Success ? HtmlEntity.DeEntitize(match.Groups[1].Value).Trim() : string.Empty;
     }
 
-    private static bool IsChallengePage(string html)
-    {
-        return html.Contains("Performing security verification", StringComparison.OrdinalIgnoreCase) ||
-               html.Contains("Just a moment", StringComparison.OrdinalIgnoreCase) ||
-               html.Contains("Enable JavaScript and cookies to continue", StringComparison.OrdinalIgnoreCase) ||
-               html.Contains("window._cf_chl_opt", StringComparison.OrdinalIgnoreCase) ||
-               html.Contains("challenge-form", StringComparison.OrdinalIgnoreCase) ||
-               html.Contains("cf-challenge", StringComparison.OrdinalIgnoreCase) ||
-               html.Contains("cf-mitigated", StringComparison.OrdinalIgnoreCase);
-    }
-
     private sealed record HtmlCacheEntry(BrowserFetchResult Response, DateTimeOffset ExpiresAt);
 
     [GeneratedRegex("<title\\b[^>]*>(.*?)</title>", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
@@ -955,20 +1032,18 @@ public sealed partial class HanimeApiClient
 
     private static void EnsureNotBlocked(BrowserFetchResult response)
     {
-        if (response.Html.Contains("Performing security verification", StringComparison.OrdinalIgnoreCase) ||
-            response.Html.Contains("Just a moment", StringComparison.OrdinalIgnoreCase) ||
-            response.Html.Contains("Enable JavaScript and cookies to continue", StringComparison.OrdinalIgnoreCase) ||
-            response.Html.Contains("window._cf_chl_opt", StringComparison.OrdinalIgnoreCase) ||
-            response.Html.Contains("challenge-form", StringComparison.OrdinalIgnoreCase) ||
-            response.Html.Contains("cf-challenge", StringComparison.OrdinalIgnoreCase) ||
-            response.Html.Contains("cf-mitigated", StringComparison.OrdinalIgnoreCase))
+        var marker = CloudflareDetection.FindChallengeMarker(response.Html, response.Title);
+        if (marker is not null)
         {
-            throw new InvalidOperationException("请求被 Cloudflare 挑战页拦截，请重新验证。页面仍是 Cloudflare 验证页。");
+            var snippet = CloudflareDetection.BuildContextSnippet(response.Html, marker);
+            Debug.WriteLine($"[cf-block] marker={marker} url={response.Url} context={snippet}");
+            AppLogger.Info("cloudflare", $"检测到挑战页: marker={marker}, url={response.Url}, context={snippet}");
+            throw new InvalidOperationException($"请求被 Cloudflare 挑战页拦截（标记: {marker}），请重新验证。页面仍是 Cloudflare 验证页。");
         }
 
         if (response.Status == 403)
         {
-            throw new InvalidOperationException("站点返回 403，当前浏览器会话未被接受。请在验证窗口中先确认主页已正常打开。");
+            throw new InvalidOperationException("站点返回 403（疑似 Cloudflare 拦截），当前浏览器会话未被接受。请在验证窗口中先确认主页已正常打开。");
         }
     }
 
@@ -1032,17 +1107,17 @@ public sealed partial class HanimeApiClient
         return string.IsNullOrWhiteSpace(rawUrl) ? string.Empty : NormalizeUrl(HttpUtility.HtmlDecode(rawUrl));
     }
 
-    private static int ParseQuality(string raw)
+    private static int? ParseQuality(string raw)
     {
         return int.TryParse(raw.Replace("p", string.Empty, StringComparison.OrdinalIgnoreCase), out var quality)
             ? quality
-            : 0;
+            : null;
     }
 
-    private static int ParseQualityFromText(string raw)
+    private static int? ParseQualityFromText(string raw)
     {
         var match = QualityRegex().Match(raw ?? string.Empty);
-        return match.Success && int.TryParse(match.Groups[1].Value, out var quality) ? quality : 0;
+        return match.Success && int.TryParse(match.Groups[1].Value, out var quality) ? quality : null;
     }
 
     [GeneratedRegex(@"(?:[?&](?:v|id|video[_-]?id|videoId)=|/(?:watch|video|videos)(?:/|=)|(?:^|[^\d])(?:video[_-]?id|vid)[=:])(\d+)", RegexOptions.IgnoreCase)]

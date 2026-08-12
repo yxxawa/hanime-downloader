@@ -8,4 +8,6 @@ public sealed class BrowserCookieRecord
     public string Path { get; set; } = "/";
     public bool IsSecure { get; set; }
     public bool IsHttpOnly { get; set; }
+    /// <summary>过期时间（Unix 秒）。null 表示会话 Cookie。</summary>
+    public double? Expires { get; set; }
 }

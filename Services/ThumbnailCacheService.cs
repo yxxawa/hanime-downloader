@@ -19,6 +19,7 @@ public static class ThumbnailCacheService
     };
 
     private static readonly ConcurrentDictionary<string, Lazy<Task<BitmapSource?>>> Cache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentQueue<string> InsertionOrder = new();
     private const int MaxCacheSize = 500;
     private static readonly SemaphoreSlim DownloadGate = new(8, 8);
 
@@ -27,14 +28,14 @@ public static class ThumbnailCacheService
         if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url, UriKind.Absolute, out _))
             return Task.FromResult<BitmapSource?>(null);
 
-        if (Cache.Count >= MaxCacheSize)
+        // FIFO 淘汰：按插入顺序移除最旧的一半。
+        while (InsertionOrder.Count >= MaxCacheSize && InsertionOrder.TryDequeue(out var oldestKey))
         {
-            var keysToRemove = Cache.Keys.Take(MaxCacheSize / 2).ToList();
-            foreach (var k in keysToRemove)
-                Cache.TryRemove(k, out _);
+            Cache.TryRemove(oldestKey, out _);
         }
 
         var key = $"{decodePixelWidth}|{url}";
+        InsertionOrder.Enqueue(key);
         var lazy = Cache.GetOrAdd(key, _ => new Lazy<Task<BitmapSource?>>(() => LoadAsync(url, decodePixelWidth), LazyThreadSafetyMode.ExecutionAndPublication));
         return lazy.Value;
     }
@@ -56,7 +57,12 @@ public static class ThumbnailCacheService
             bitmap.Freeze();
             return bitmap;
         }
-        catch { return null; }
+        catch
+        {
+            // 失败不中毒缓存：移除条目，下次请求会重试而不是永远拿到 null。
+            Cache.TryRemove($"{decodePixelWidth}|{url}", out _);
+            return null;
+        }
         finally { DownloadGate.Release(); }
     }
 }

@@ -33,6 +33,12 @@ public static class AppLogger
     {
         var key = $"{category}|{message}";
         var now = DateTime.UtcNow;
+        if (LastMessageTimes.Count > 3000)
+        {
+            // 防止带唯一操作编号的消息（如 [cfrecover-000123]）无限增长。
+            LastMessageTimes.Clear();
+        }
+
         var last = LastMessageTimes.GetOrAdd(key, DateTime.MinValue);
         if (now - last < interval)
         {
@@ -45,16 +51,27 @@ public static class AppLogger
 
     private static void Write(string level, string category, string message, Exception? exception)
     {
-#if DEBUG
-        var text = $"[{DateTime.Now:yyyy/MM/dd HH:mm:ss}] [{level}] [{category}] {message}{Environment.NewLine}";
-        if (exception is not null)
+        try
         {
-            text += exception + Environment.NewLine;
+            if (File.Exists(AppLogPath) && new FileInfo(AppLogPath).Length > 5 * 1024 * 1024)
+            {
+                // 日志轮转：超过 5MB 重建，防止无限增长。
+                File.Delete(AppLogPath);
+            }
+
+            var text = $"[{DateTime.Now:yyyy/MM/dd HH:mm:ss}] [{level}] [{category}] {message}{Environment.NewLine}";
+            if (exception is not null)
+            {
+                text += exception + Environment.NewLine;
+            }
+            lock (SyncRoot)
+            {
+                File.AppendAllText(AppLogPath, text + Environment.NewLine);
+            }
         }
-        lock (SyncRoot)
+        catch
         {
-            File.AppendAllText(AppLogPath, text + Environment.NewLine);
+            // 日志写入失败（磁盘满/文件锁等）绝不能让应用崩溃。
         }
-#endif
     }
 }

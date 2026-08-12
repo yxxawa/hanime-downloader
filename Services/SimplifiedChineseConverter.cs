@@ -17,7 +17,8 @@ public static class SimplifiedChineseConverter
             var len = LCMapStringEx("zh-Hans", LCMAP_SIMPLIFIED_CHINESE, text, text.Length, null, 0, 0, 0, 0);
             var buf = new char[len];
             LCMapStringEx("zh-Hans", LCMAP_SIMPLIFIED_CHINESE, text, text.Length, buf, len, 0, 0, 0);
-            return new string(buf);
+            // cchDest=0 时返回值含终止 NUL，TrimEnd 去掉尾部空字符。
+            return new string(buf).TrimEnd('\0');
         }
         catch { return text; }
     }

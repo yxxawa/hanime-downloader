@@ -7,14 +7,14 @@
         ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False"
-        Background="#F6F6F6">
+        Background="{DynamicResource ThemeDialogBackgroundBrush}">
     <Window.Resources>
         <Style TargetType="Button">
             <Setter Property="Padding" Value="8,0"/>
             <Setter Property="Height" Value="28"/>
             <Setter Property="FontSize" Value="11"/>
-            <Setter Property="Background" Value="#FFFFFF"/>
-            <Setter Property="BorderBrush" Value="#C8D0DA"/>
+            <Setter Property="Background" Value="{DynamicResource ThemeSurfaceBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeInputBorderBrush}"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Template">
                 <Setter.Value>
@@ -31,8 +31,8 @@
             </Setter>
         </Style>
         <Style x:Key="PrimaryButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-            <Setter Property="Background" Value="#1677FF"/>
-            <Setter Property="BorderBrush" Value="#1677FF"/>
+            <Setter Property="Background" Value="{DynamicResource ThemeAccentBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeAccentBrush}"/>
             <Setter Property="Foreground" Value="White"/>
         </Style>
         <Style TargetType="TextBox">
@@ -50,7 +50,7 @@
 
         <TextBlock x:Name="PromptText"
                    TextWrapping="Wrap"
-                   Foreground="#374151"
+                   Foreground="{DynamicResource ThemeTextBrush}"
                    FontSize="11"/>
 
         <TextBox x:Name="InputBox"

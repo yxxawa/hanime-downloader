@@ -32,6 +32,8 @@ public partial class SettingsDialog : Window
             CustomSiteHosts = currentSettings.CustomSiteHosts.ToList(),
             PersistDownloadQueue = currentSettings.PersistDownloadQueue,
             MaxConcurrentDownloads = currentSettings.MaxConcurrentDownloads,
+            MaxRetries = currentSettings.MaxRetries,
+            SpeedLimitKBps = currentSettings.SpeedLimitKBps,
             SearchHistory = currentSettings.SearchHistory.ToList(),
             VideoDetailsVisibility = new VideoDetailsVisibilitySettings
             {
@@ -83,6 +85,10 @@ public partial class SettingsDialog : Window
             new() { Label = "3", Value = "3" }
         };
 
+        MaxRetriesCombo.ItemsSource = Enumerable.Range(0, 9)
+            .Select(count => new NamingRuleOption { Label = count == 0 ? "不重试" : count.ToString(), Value = count.ToString() })
+            .ToList();
+
         DownloadPathBox.Text = Settings.DownloadPath;
         NamingRuleCombo.SelectedValue = Settings.FileNamingRule;
         SiteCombo.SelectedValue = normalizedCurrentSiteHost;
@@ -93,6 +99,8 @@ public partial class SettingsDialog : Window
         CompactModeCheckBox.IsChecked = Settings.CompactMode;
         PersistQueueCheckBox.IsChecked = Settings.PersistDownloadQueue;
         MaxConcurrentDownloadsCombo.SelectedValue = Math.Clamp(Settings.MaxConcurrentDownloads, 1, 3).ToString();
+        MaxRetriesCombo.SelectedValue = Math.Clamp(Settings.MaxRetries, 0, 8).ToString();
+        SpeedLimitBox.Text = Math.Max(0, Settings.SpeedLimitKBps).ToString();
         ShowTitleCheckBox.IsChecked = Settings.VideoDetailsVisibility.Title;
         ShowUploadDateCheckBox.IsChecked = Settings.VideoDetailsVisibility.UploadDate;
         ShowLikesCheckBox.IsChecked = Settings.VideoDetailsVisibility.Likes;
@@ -254,6 +262,12 @@ public partial class SettingsDialog : Window
         Settings.MaxConcurrentDownloads = int.TryParse(MaxConcurrentDownloadsCombo.SelectedValue as string, out var maxConcurrentDownloads)
             ? Math.Clamp(maxConcurrentDownloads, 1, 3)
             : 1;
+        Settings.MaxRetries = int.TryParse(MaxRetriesCombo.SelectedValue as string, out var maxRetries)
+            ? Math.Clamp(maxRetries, 0, 8)
+            : 3;
+        Settings.SpeedLimitKBps = int.TryParse(SpeedLimitBox.Text.Trim(), out var speedLimitKbps) && speedLimitKbps > 0
+            ? Math.Min(speedLimitKbps, 1_000_000)
+            : 0;
         Settings.VideoDetailsVisibility.Title = ShowTitleCheckBox.IsChecked == true;
         Settings.VideoDetailsVisibility.UploadDate = ShowUploadDateCheckBox.IsChecked == true;
         Settings.VideoDetailsVisibility.Likes = ShowLikesCheckBox.IsChecked == true;
@@ -428,7 +442,7 @@ public partial class SettingsDialog : Window
     private static string BuildFileNamePreview(string? template)
     {
         var namingTemplate = string.IsNullOrWhiteSpace(template) ? "{title}" : template;
-        var timestamp = new DateTime(2026, 4, 20, 13, 14, 15).ToString("yyyyMMdd_HHmmss");
+        var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
         var fileName = namingTemplate
             .Replace("{title}", SanitizeFileName("示例视频标题"), StringComparison.OrdinalIgnoreCase)
             .Replace("{timestamp}", timestamp, StringComparison.OrdinalIgnoreCase)
@@ -441,7 +455,7 @@ public partial class SettingsDialog : Window
     {
         var invalidChars = Path.GetInvalidFileNameChars();
         var cleaned = new string(value.Select(ch => invalidChars.Contains(ch) ? '_' : ch).ToArray()).Trim();
-        return string.IsNullOrWhiteSpace(cleaned) ? "hanime_20260420_131415" : cleaned;
+        return string.IsNullOrWhiteSpace(cleaned) ? $"hanime_{DateTime.Now:yyyyMMdd_HHmmss}" : cleaned;
     }
 
     private sealed class NamingRuleOption

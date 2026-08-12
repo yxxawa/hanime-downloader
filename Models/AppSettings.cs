@@ -8,7 +8,7 @@ public sealed class AppSettings
     public static string DefaultDownloadPath => Path.Combine(AppContext.BaseDirectory, "Downloads");
 
     public string DownloadPath { get; set; } = DefaultDownloadPath;
-    public string FileNamingRule { get; set; } = "{title}";
+    public string FileNamingRule { get; set; } = "{title}_{videoId}";
     public bool ShowListCovers { get; set; } = true;
     public bool CompactMode { get; set; } = false;
     public string DefaultQuality { get; set; } = "highest";
@@ -17,9 +17,16 @@ public sealed class AppSettings
     public bool PersistDownloadQueue { get; set; } = true;
     public string ThemeMode { get; set; } = "light";
     public int MaxConcurrentDownloads { get; set; } = 1;
+    public int MaxRetries { get; set; } = 3;
+    public int SpeedLimitKBps { get; set; } = 0;
     public List<string> SearchHistory { get; set; } = [];
     public VideoDetailsVisibilitySettings VideoDetailsVisibility { get; set; } = new();
     public PlayerWindowSettings PlayerWindow { get; set; } = new();
+    public double? WindowLeft { get; set; }
+    public double? WindowTop { get; set; }
+    public double? WindowWidth { get; set; }
+    public double? WindowHeight { get; set; }
+    public WindowState WindowState { get; set; } = WindowState.Normal;
 
     public string SiteBaseUrl => $"https://{SiteHost}";
 }
@@ -43,4 +50,6 @@ public sealed class PlayerWindowSettings
     public double? Left { get; set; }
     public double? Top { get; set; }
     public WindowState WindowState { get; set; } = WindowState.Normal;
+    public double? PlaybackPosition { get; set; }
+    public double? Volume { get; set; }
 }

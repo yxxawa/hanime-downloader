@@ -72,6 +72,7 @@ public static class AppTheme
         }
 
         ApplySystemColors(application, isDark);
+        TitleBarTheme.SetDark(isDark);
     }
 
     private static void ApplySystemColors(Application application, bool isDark)
