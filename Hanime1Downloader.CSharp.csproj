@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <Version>4.1.0</Version>
+    <InformationalVersion>4.1.0</InformationalVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="HtmlAgilityPack" Version="1.12.4" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3912.50">
+      <Publish>true</Publish>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="**\*.xml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\SearchOptions\*.json" />
+    <Resource Include="Assets\app.ico" />
+    <Resource Include="Assets\hls.min.js" />
+  </ItemGroup>
+
+
+</Project>
+
+
+
+
