@@ -153,17 +153,6 @@ hanime-downloader/
 
 ---
 
-## 多人分发（给其他人一起用）
-
-程序不绑定任何个人数据，可以直接分发给多个人使用：
-
-- **每个人第一次运行时自动完成 Cloudflare 验证**（后台静默通过，约 1-4 秒），随后在各自的
-  `%LOCALAPPDATA%\Hanime1Downloader.CSharp\WebView2\<站点>` 里保存属于自己的 `cf_clearance`，
-  有效期约一年，互相独立。
-- `cf_clearance` 由 Cloudflare 绑定到 **出口 IP + TLS 指纹 + User-Agent**，**无法共享**。
-  不要把发布者自己的 `cookies.*.json` / `settings.json` 打进发布包：既泄漏自己的会话，
-  对别人也无效。
-
 ### 打包发布
 
 ```powershell
