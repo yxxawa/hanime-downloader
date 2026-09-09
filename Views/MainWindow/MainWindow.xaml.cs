@@ -105,7 +105,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         InitializeComponent();
         DataContext = this;
-        var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "4.1.0";
+        var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "5.0.0";
         Title = $"Hanime1视频工具 v{version}";
         _favoritesFilterTimer.Tick += (_, _) =>
         {
