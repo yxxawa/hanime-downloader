@@ -119,12 +119,23 @@ public sealed partial class DownloadService
             cancellationToken);
     }
 
-    /// <summary>4 秒滑动窗口瞬时速度（约 2MB 采样上限）。</summary>
-    /// <summary>滑动窗口瞬时速度。HLS 并行下载后会被多线程调用，因此内部加锁。</summary>
+    /// <summary>
+    /// 瞬时速度：最近 4 秒、最多 32MB 采样，再做时间加权 EMA 平滑。
+    /// 旧实现只有 2MB 采样上限（约等于 2 个 1MB 读块），显示值几乎等于
+    /// "两块之间的间隔"，网络抖动会直接反映到界面上，看起来来回跳。
+    /// HLS 并行下载后会被多线程调用，因此内部加锁。
+    /// </summary>
     private sealed class SpeedWindow
     {
+        private const int WindowMs = 4000;
+        private const long MaxWindowBytes = 32L * 1024 * 1024;
+        private const long MinWindowMs = 500;
+        private const double SmoothingTauMs = 1200d;
+
         private readonly Queue<(long Tick, int Bytes)> _samples = new();
         private readonly object _sync = new();
+        private double _smoothedBytesPerSecond;
+        private long _lastSampleTick;
 
         public void Add(int bytes)
         {
@@ -135,18 +146,43 @@ public sealed partial class DownloadService
 
             lock (_sync)
             {
-                _samples.Enqueue((Environment.TickCount64, bytes));
                 var now = Environment.TickCount64;
-                while (_samples.Count > 0 && now - _samples.Peek().Tick > 4000)
+                _samples.Enqueue((now, bytes));
+                while (_samples.Count > 0 && now - _samples.Peek().Tick > WindowMs)
                 {
                     _samples.Dequeue();
                 }
 
                 var totalBytes = _samples.Sum(sample => (long)sample.Bytes);
-                while (_samples.Count > 0 && totalBytes > 2 * 1024 * 1024)
+                while (_samples.Count > 0 && totalBytes > MaxWindowBytes)
                 {
                     totalBytes -= _samples.Dequeue().Bytes;
                 }
+
+                if (_samples.Count < 2)
+                {
+                    return;
+                }
+
+                var windowMs = now - _samples.Peek().Tick;
+                if (windowMs < MinWindowMs)
+                {
+                    return; // 采样时间太短，先不显示瞬时值（UI 回退到平均速度）
+                }
+
+                var instant = totalBytes * 1000d / windowMs;
+                if (_smoothedBytesPerSecond <= 0 || _lastSampleTick == 0)
+                {
+                    _smoothedBytesPerSecond = instant;
+                }
+                else
+                {
+                    var elapsed = Math.Max(now - _lastSampleTick, 1L);
+                    var alpha = 1d - Math.Exp(-elapsed / SmoothingTauMs);
+                    _smoothedBytesPerSecond += alpha * (instant - _smoothedBytesPerSecond);
+                }
+
+                _lastSampleTick = now;
             }
         }
 
@@ -156,15 +192,7 @@ public sealed partial class DownloadService
             {
                 lock (_sync)
                 {
-                    if (_samples.Count < 2)
-                    {
-                        return 0;
-                    }
-
-                    var now = Environment.TickCount64;
-                    var windowBytes = _samples.Sum(sample => (long)sample.Bytes);
-                    var windowMs = Math.Max(now - _samples.Peek().Tick, 1L);
-                    return windowBytes * 1000d / windowMs;
+                    return _smoothedBytesPerSecond;
                 }
             }
         }
