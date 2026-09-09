@@ -109,7 +109,7 @@ dotnet publish "Hanime1Downloader.CSharp.csproj" -c Release -p:DebugType=None -p
 
 ## 数据文件
 
-所有数据统一保存在 `%LOCALAPPDATA%\Hanime1Downloader.CSharp`（每个 Windows 用户一份），exe 所在目录只放程序本体，不会生成 settings / cookies / 日志 / 封面缓存等文件。旧版放在程序目录里的数据会在首次运行时自动迁移过来。
+设置 / 收藏 / 历史 / 队列 / Cookie / 封面缓存 / 日志统一保存在 `%LOCALAPPDATA%\Hanime1Downloader.CSharp`（每个 Windows 用户一份）；下载的视频默认保存在 **exe 所在目录的 `Downloads\`**。旧版放在程序目录里的数据会在首次运行时自动迁移过来。
 
 | 文件 | 说明 |
 |:---|:---|
@@ -168,6 +168,7 @@ dotnet publish "Hanime1Downloader.CSharp.csproj" -c Release -r win-arm64 --self-
 
 | 内容 | 位置 |
 |:---|:---|
+| 下载的视频（默认） | **exe 所在目录 `\Downloads`**（可在设置里改） |
 | 设置 / 收藏 / 下载历史 / 下载队列 / Cookie 缓存 | `%LOCALAPPDATA%\Hanime1Downloader.CSharp` |
 | 封面缓存 `thumbcache\` | `%LOCALAPPDATA%\Hanime1Downloader.CSharp\thumbcache` |
 | WebView2 / Cloudflare 会话 | `%LOCALAPPDATA%\Hanime1Downloader.CSharp\WebView2` |

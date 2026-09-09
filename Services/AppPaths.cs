@@ -1,7 +1,5 @@
 using System.Diagnostics;
 using System.IO;
-using System.Text.Json;
-using System.Text.Json.Nodes;
 
 namespace Hanime1Downloader.CSharp.Services;
 
@@ -25,7 +23,8 @@ public static class AppPaths
     public static string LegacyCookieCacheFile => Path.Combine(DataDirectory, "cookies.json");
     public static string LogFile => Path.Combine(DataDirectory, "app.log");
     public static string CrashLogFile => Path.Combine(DataDirectory, "crash.log");
-    public static string DefaultDownloadDirectory => Path.Combine(DataDirectory, "Downloads");
+    /// <summary>默认下载目录：exe 所在目录下的 Downloads（数据/缓存仍放 %LOCALAPPDATA%）。</summary>
+    public static string DefaultDownloadDirectory => Path.Combine(AppContext.BaseDirectory, "Downloads");
 
     public static string CookieCacheFile(string? siteHost)
     {
@@ -87,37 +86,10 @@ public static class AppPaths
                 File.Copy(cookieFile, Path.Combine(targetDirectory, Path.GetFileName(cookieFile)), overwrite: true);
             }
 
-            RewriteLegacyDownloadPath(targetSettings, legacyDirectory, targetDirectory);
         }
         catch
         {
             // 迁移失败不影响启动：新目录按默认设置运行。
-        }
-    }
-
-    private static void RewriteLegacyDownloadPath(string settingsPath, string legacyDirectory, string targetDirectory)
-    {
-        try
-        {
-            if (JsonNode.Parse(File.ReadAllText(settingsPath)) is not JsonObject root ||
-                root["DownloadPath"] is not JsonValue value ||
-                !value.TryGetValue<string>(out var downloadPath))
-            {
-                return;
-            }
-
-            if (string.IsNullOrWhiteSpace(downloadPath) ||
-                !downloadPath.StartsWith(legacyDirectory, StringComparison.OrdinalIgnoreCase))
-            {
-                return;
-            }
-
-            root["DownloadPath"] = Path.Combine(targetDirectory, "Downloads");
-            File.WriteAllText(settingsPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-        }
-        catch
-        {
-            // 改不动就算了，用户仍可在设置里手动改。
         }
     }
 }

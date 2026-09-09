@@ -546,6 +546,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 return AppSettings.DefaultDownloadPath;
             }
+
+            // 中间版本曾把默认下载目录放到 %LOCALAPPDATA%\Hanime1Downloader.CSharp\Downloads，
+            // 现在默认改为 exe 目录\Downloads，旧值一并视为默认。
+            var legacyLocalAppDataPath = Path.GetFullPath(Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                AppPaths.AppFolderName,
+                "Downloads"));
+            if (string.Equals(fullPath, legacyLocalAppDataPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return AppSettings.DefaultDownloadPath;
+            }
+
             return fullPath;
         }
         catch
