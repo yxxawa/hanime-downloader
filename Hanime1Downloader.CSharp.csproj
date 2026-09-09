@@ -10,6 +10,10 @@
     <SelfContained>false</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!-- 发布目录只保留单文件 exe：不复制依赖附带的 .xml / .pdb 等文件 -->
+    <AllowedReferenceRelatedFileExtensions>none</AllowedReferenceRelatedFileExtensions>
+    <CopyDebugSymbolFilesFromPackages>false</CopyDebugSymbolFilesFromPackages>
+    <CopyDocumentationFilesFromPackages>false</CopyDocumentationFilesFromPackages>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <Version>4.1.0</Version>
     <InformationalVersion>4.1.0</InformationalVersion>
