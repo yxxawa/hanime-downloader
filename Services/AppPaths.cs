@@ -1,15 +1,15 @@
 using System.Diagnostics;
 using System.IO;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Hanime1Downloader.CSharp.Services;
 
 /// <summary>
-/// 统一解析程序数据目录，保证多人分发时每个用户的数据互相独立、且始终可写。
-/// 规则：
-///   1. 优先使用 exe 所在目录（便携模式，与旧版行为一致，老用户数据位置不变）；
-///   2. 该目录不可写时（例如安装到 C:\Program Files 或只读共享目录），回退到
-///      %LOCALAPPDATA%\Hanime1Downloader.CSharp —— 每个 Windows 用户一份，互不干扰。
-/// 注意：WebView2 的 Cloudflare 会话本就存放在 %LOCALAPPDATA%，天然按用户隔离。
+/// 统一解析程序数据目录：始终使用 %LOCALAPPDATA%\Hanime1Downloader.CSharp，
+/// exe 所在目录保持干净（不再生成 settings / cookies / 日志 / thumbcache / Downloads 等）。
+/// 首次运行时会把旧版留在 exe 目录的便携数据迁移过来，并把仍指向 exe 目录的下载路径改到新目录。
+/// 注意：WebView2 的 Cloudflare 会话同样在 %LOCALAPPDATA%，天然按用户隔离。
 /// </summary>
 public static class AppPaths
 {
@@ -17,9 +17,6 @@ public static class AppPaths
     private static readonly Lazy<string> DataDirectoryLazy = new(ResolveDataDirectory, LazyThreadSafetyMode.ExecutionAndPublication);
 
     public static string DataDirectory => DataDirectoryLazy.Value;
-
-    /// <summary>true = 数据写在程序目录（便携模式）；false = 回退到 %LOCALAPPDATA%。</summary>
-    public static bool IsPortable => string.Equals(DataDirectory, AppContext.BaseDirectory, StringComparison.OrdinalIgnoreCase);
 
     public static string SettingsFile => Path.Combine(DataDirectory, "settings.json");
     public static string FavoritesFile => Path.Combine(DataDirectory, "favorites.json");
@@ -39,37 +36,88 @@ public static class AppPaths
 
     private static string ResolveDataDirectory()
     {
-        var baseDirectory = AppContext.BaseDirectory;
-        if (IsWritable(baseDirectory))
-        {
-            return baseDirectory;
-        }
-
-        var fallback = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), AppFolderName);
+        var userDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            AppFolderName);
         try
         {
-            Directory.CreateDirectory(fallback);
+            Directory.CreateDirectory(userDirectory);
         }
         catch
         {
             // 极端情况下连 %LOCALAPPDATA% 都不可用：仍然返回该路径，让后续写入错误显式暴露。
         }
 
-        Debug.WriteLine($"[storage] 程序目录不可写，数据目录回退到 {fallback}");
-        return fallback;
+        TryMigrateLegacyPortableData(userDirectory);
+        return userDirectory;
     }
 
-    private static bool IsWritable(string directory)
+    /// <summary>
+    /// 旧版把数据放在 exe 目录（便携模式）。升级后数据目录改为 %LOCALAPPDATA%，
+    /// 首次启动时把旧数据搬过来；下载路径若仍指向 exe 目录，一并改到新目录。
+    /// </summary>
+    private static void TryMigrateLegacyPortableData(string targetDirectory)
     {
         try
         {
-            var probe = Path.Combine(directory, $".write-probe-{Guid.NewGuid():N}.tmp");
-            using var stream = new FileStream(probe, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose);
-            return true;
+            var legacyDirectory = AppContext.BaseDirectory;
+            if (string.Equals(Path.GetFullPath(legacyDirectory), Path.GetFullPath(targetDirectory), StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var legacySettings = Path.Combine(legacyDirectory, "settings.json");
+            var targetSettings = Path.Combine(targetDirectory, "settings.json");
+            if (!File.Exists(legacySettings) || File.Exists(targetSettings))
+            {
+                return; // 没有旧数据，或新目录已有数据：不覆盖
+            }
+
+            foreach (var name in new[] { "settings.json", "favorites.json", "download_history.json", "download_queue.json" })
+            {
+                var source = Path.Combine(legacyDirectory, name);
+                if (File.Exists(source))
+                {
+                    File.Copy(source, Path.Combine(targetDirectory, name), overwrite: true);
+                }
+            }
+
+            foreach (var cookieFile in Directory.EnumerateFiles(legacyDirectory, "cookies*.json"))
+            {
+                File.Copy(cookieFile, Path.Combine(targetDirectory, Path.GetFileName(cookieFile)), overwrite: true);
+            }
+
+            RewriteLegacyDownloadPath(targetSettings, legacyDirectory, targetDirectory);
         }
         catch
         {
-            return false;
+            // 迁移失败不影响启动：新目录按默认设置运行。
+        }
+    }
+
+    private static void RewriteLegacyDownloadPath(string settingsPath, string legacyDirectory, string targetDirectory)
+    {
+        try
+        {
+            if (JsonNode.Parse(File.ReadAllText(settingsPath)) is not JsonObject root ||
+                root["DownloadPath"] is not JsonValue value ||
+                !value.TryGetValue<string>(out var downloadPath))
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(downloadPath) ||
+                !downloadPath.StartsWith(legacyDirectory, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            root["DownloadPath"] = Path.Combine(targetDirectory, "Downloads");
+            File.WriteAllText(settingsPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch
+        {
+            // 改不动就算了，用户仍可在设置里手动改。
         }
     }
 }

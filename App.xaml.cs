@@ -12,7 +12,7 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         AppTheme.Apply(this, AppTheme.ReadSavedThemeMode());
-        AppLogger.Info("storage", $"数据目录: {AppPaths.DataDirectory}（{(AppPaths.IsPortable ? "便携模式" : "回退到本地用户目录")}）");
+        AppLogger.Info("storage", $"数据目录: {AppPaths.DataDirectory}");
         TitleBarTheme.RegisterWindowAutoApply();
         base.OnStartup(e);
         DispatcherUnhandledException += (_, args) =>

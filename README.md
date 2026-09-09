@@ -66,7 +66,7 @@
 **收藏与数据**
 
 - 多收藏夹管理：新建、重命名、删除、导入 / 导出
-- 所有数据保存在程序目录，便携无需安装
+- 数据统一保存在 `%LOCALAPPDATA%\Hanime1Downloader.CSharp`，exe 目录保持干净
 
 **个性化**
 
@@ -109,7 +109,7 @@ dotnet publish "Hanime1Downloader.CSharp.csproj" -c Release -p:DebugType=None -p
 
 ## 数据文件
 
-程序数据文件存储在程序同目录下，拷贝文件夹即可迁移（注意：WebView2 浏览器会话与播放器配置存储在 `%LOCALAPPDATA%\Hanime1Downloader.CSharp\WebView2\`，Cookie 缓存文件本身可以随文件夹迁移）。
+所有数据统一保存在 `%LOCALAPPDATA%\Hanime1Downloader.CSharp`（每个 Windows 用户一份），exe 所在目录只放程序本体，不会生成 settings / cookies / 日志 / 封面缓存等文件。旧版放在程序目录里的数据会在首次运行时自动迁移过来。
 
 | 文件 | 说明 |
 |:---|:---|
@@ -162,16 +162,16 @@ dotnet publish "Hanime1Downloader.CSharp.csproj" -c Release -r win-x86   --self-
 dotnet publish "Hanime1Downloader.CSharp.csproj" -c Release -r win-arm64 --self-contained false -p:PublishSingleFile=true -p:DebugType=None -o dist\arm64
 ```
 
-发布前请确认输出目录里没有 `settings.json`、`cookies.*.json`、`app.log`、`Downloads/`
-等个人数据，避免把自己的会话/记录发给别人。
+发布包只需要放 exe：运行时数据都在 `%LOCALAPPDATA%`，不会污染 exe 目录。
 
 ### 数据目录
 
-| 情况 | 数据位置 |
+| 内容 | 位置 |
 |:---|:---|
-| 程序目录可写 | 程序目录（便携模式，与旧版一致） |
-| 程序目录不可写（如 `C:\Program Files`） | `%LOCALAPPDATA%\Hanime1Downloader.CSharp`，每个 Windows 用户一份 |
-| WebView2 / Cloudflare 会话 | 始终在 `%LOCALAPPDATA%`，天然按用户隔离 |
+| 设置 / 收藏 / 下载历史 / 下载队列 / Cookie 缓存 | `%LOCALAPPDATA%\Hanime1Downloader.CSharp` |
+| 封面缓存 `thumbcache\` | `%LOCALAPPDATA%\Hanime1Downloader.CSharp\thumbcache` |
+| WebView2 / Cloudflare 会话 | `%LOCALAPPDATA%\Hanime1Downloader.CSharp\WebView2` |
+| 日志 | 发布版不生成 `app.log`；仅崩溃时生成 `crash.log` |
 
 ### 其他注意
 
