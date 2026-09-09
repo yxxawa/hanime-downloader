@@ -5,6 +5,13 @@ namespace Hanime1Downloader.CSharp.Services;
 
 public static class AppLogger
 {
+    /// <summary>Release 版不写日志文件（不生成 app.log）；Debug 版保留，方便排查。</summary>
+#if DEBUG
+    private static readonly bool FileLoggingEnabled = true;
+#else
+    private static readonly bool FileLoggingEnabled = false;
+#endif
+
     private static readonly string AppLogPath = AppPaths.LogFile;
     private static readonly object SyncRoot = new();
     private static long _currentLogSize = -1;
@@ -52,6 +59,11 @@ public static class AppLogger
 
     private static void Write(string level, string category, string message, Exception? exception)
     {
+        if (!FileLoggingEnabled)
+        {
+            return;
+        }
+
         try
         {
             var text = $"[{DateTime.Now:yyyy/MM/dd HH:mm:ss}] [{level}] [{category}] {message}{Environment.NewLine}";
