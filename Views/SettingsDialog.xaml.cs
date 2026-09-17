@@ -1,4 +1,4 @@
-using Hanime1Downloader.CSharp.Models;
+﻿using Hanime1Downloader.CSharp.Models;
 using Hanime1Downloader.CSharp.Services;
 using Microsoft.Win32;
 using System.Diagnostics;
@@ -244,10 +244,10 @@ public partial class SettingsDialog : Window
         try
         {
             var identity = await _bindAccountAsync(email, password);
-            _boundEmail = email;
+            _boundEmail = string.IsNullOrWhiteSpace(identity.Email) ? email : identity.Email;
             _boundUserId = identity.UserId;
             _boundUserName = identity.UserName;
-            Settings.AccountEmail = email;
+            Settings.AccountEmail = _boundEmail;
             Settings.AccountUserId = identity.UserId;
             Settings.AccountUserName = identity.UserName;
             AccountBindingChanged = true;

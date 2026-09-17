@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 
 namespace Hanime1Downloader.CSharp.Services;
 
-public sealed record HanimeAccountIdentity(string UserId, string UserName);
+public sealed record HanimeAccountIdentity(string UserId, string UserName, string Email);
 
 public sealed class HanimeAccountService
 {
@@ -106,10 +106,11 @@ public sealed class HanimeAccountService
         if (!string.IsNullOrWhiteSpace(actualEmail) &&
             !actualEmail.Equals(expectedEmail.Trim(), StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidOperationException($"当前站点登录账号为 {actualEmail}，与设置中的 {expectedEmail.Trim()} 不一致，请重新登录。");
+            AppLogger.Info("favorites-account", $"账号邮箱已按站点实际值校正: settings={expectedEmail.Trim()}, actual={actualEmail}");
+            return identity with { Email = actualEmail };
         }
 
-        return identity;
+        return string.IsNullOrWhiteSpace(actualEmail) ? identity : identity with { Email = actualEmail };
     }
 
     public async Task<HanimeAccountIdentity?> GetCurrentAccountAsync(CancellationToken cancellationToken = default)
@@ -426,7 +427,7 @@ public sealed class HanimeAccountService
         }
 
         var userName = ToDisplayText(doc.DocumentNode.SelectSingleNode("//*[@id='user-modal-name']")?.InnerText);
-        return new HanimeAccountIdentity(match.Groups[1].Value, string.IsNullOrWhiteSpace(userName) ? match.Groups[1].Value : userName);
+        return new HanimeAccountIdentity(match.Groups[1].Value, string.IsNullOrWhiteSpace(userName) ? match.Groups[1].Value : userName, string.Empty);
     }
 
     private static string ExtractFormError(string html)

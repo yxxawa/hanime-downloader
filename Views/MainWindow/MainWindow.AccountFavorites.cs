@@ -121,6 +121,10 @@ public partial class MainWindow
             }
 
             _favoriteFolders.Clear();
+            if (!string.IsNullOrWhiteSpace(account.Email))
+            {
+                _settings.AccountEmail = account.Email;
+            }
             _settings.AccountUserId = account.UserId;
             _settings.AccountUserName = account.UserName;
             SaveSettings();
