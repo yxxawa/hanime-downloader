@@ -405,7 +405,7 @@
 
         <Grid Grid.Row="1" Margin="0,5,0,0">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="1.02*" MinWidth="236"/>
+                <ColumnDefinition x:Name="SearchResultsColumn" Width="1.02*" MinWidth="236"/>
                 <ColumnDefinition Width="6"/>
                 <ColumnDefinition x:Name="InfoColumn" Width="1.4*" MinWidth="374"/>
                 <ColumnDefinition Width="6"/>
@@ -459,7 +459,8 @@
                                                     BorderBrush="{DynamicResource ThemeBorderSubtleBrush}"
                                                     BorderThickness="0,0,0,1">
                                                 <DockPanel LastChildFill="True">
-                                                    <Border DockPanel.Dock="Left"
+                                                    <Border x:Name="ResultCover"
+                                                            DockPanel.Dock="Left"
                                                             Width="64"
                                                             Height="36"
                                                             Margin="0,0,6,0"
@@ -494,6 +495,11 @@
                                                 </DockPanel>
                                             </Border>
                                         <DataTemplate.Triggers>
+                                            <DataTrigger Binding="{Binding DataContext.LargeSearchResultCovers, RelativeSource={RelativeSource AncestorType=Window}}" Value="True">
+                                                <Setter TargetName="ResultCover" Property="Width" Value="160"/>
+                                                <Setter TargetName="ResultCover" Property="Height" Value="90"/>
+                                                <Setter TargetName="ResultCover" Property="Margin" Value="0,0,8,0"/>
+                                            </DataTrigger>
                                             <DataTrigger Binding="{Binding IsDownloaded}" Value="True">
                                                 <Setter TargetName="DownloadedBadge" Property="Visibility" Value="Visible"/>
                                             </DataTrigger>
@@ -588,11 +594,7 @@
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="6"/>
-                                        <ColumnDefinition Width="64"/>
-                                        <ColumnDefinition Width="6"/>
-                                        <ColumnDefinition Width="64"/>
-                                        <ColumnDefinition Width="6"/>
-                                        <ColumnDefinition Width="76"/>
+                                        <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
 
                                     <ComboBox x:Name="FavoritesFolderBox"
@@ -600,18 +602,32 @@
                                               Height="28"
                                               VerticalContentAlignment="Center"
                                               SelectionChanged="FavoritesFolderBox_OnSelectionChanged"/>
-                                    <Button Grid.Column="2"
-                                            Style="{StaticResource SecondaryActionButtonStyle}"
-                                            Content="新建"
-                                            Click="NewFavoriteFolderButton_OnClick"/>
-                                    <Button Grid.Column="4"
-                                            Style="{StaticResource SecondaryActionButtonStyle}"
-                                            Content="删除"
-                                            Click="DeleteFavoriteFolderButton_OnClick"/>
-                                    <Button Grid.Column="6"
-                                            Style="{StaticResource SecondaryActionButtonStyle}"
-                                            Content="重命名"
-                                            Click="RenameFavoriteFolderButton_OnClick"/>
+                                    <StackPanel Grid.Column="2" Orientation="Horizontal">
+                                        <Button x:Name="NewFavoriteFolderButton"
+                                                Width="64"
+                                                Style="{StaticResource SecondaryActionButtonStyle}"
+                                                Content="新建"
+                                                Click="NewFavoriteFolderButton_OnClick"/>
+                                        <Button x:Name="DeleteFavoriteFolderButton"
+                                                Width="64"
+                                                Margin="6,0,0,0"
+                                                Style="{StaticResource SecondaryActionButtonStyle}"
+                                                Content="删除"
+                                                Click="DeleteFavoriteFolderButton_OnClick"/>
+                                        <Button x:Name="RenameFavoriteFolderButton"
+                                                Width="76"
+                                                Margin="6,0,0,0"
+                                                Style="{StaticResource SecondaryActionButtonStyle}"
+                                                Content="重命名"
+                                                Click="RenameFavoriteFolderButton_OnClick"/>
+                                        <Button x:Name="RefreshFavoritesButton"
+                                                Width="64"
+                                                Margin="6,0,0,0"
+                                                Style="{StaticResource SecondaryActionButtonStyle}"
+                                                Content="刷新"
+                                                Visibility="Collapsed"
+                                                Click="RefreshFavoritesButton_OnClick"/>
+                                    </StackPanel>
                                 </Grid>
 
                                 <Grid Grid.Row="1" Margin="0,6,0,6">

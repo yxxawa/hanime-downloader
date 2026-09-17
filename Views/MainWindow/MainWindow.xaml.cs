@@ -27,7 +27,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 {
     private const string DefaultFavoritesFolder = "默认收藏夹";
     private static readonly string AppDataDir = AppPaths.DataDirectory;
-    private static readonly string FavoritesFilePath = AppPaths.FavoritesFile;
+
     private static readonly string DownloadHistoryFilePath = AppPaths.DownloadHistoryFile;
     private static readonly string DownloadQueueFilePath = AppPaths.DownloadQueueFile;
     private static readonly string LegacyCookieCacheFilePath = AppPaths.LegacyCookieCacheFile;
@@ -100,6 +100,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     public event PropertyChangedEventHandler? PropertyChanged;
     public Visibility ShowListCoversVisibility => _settings.ShowListCovers ? Visibility.Visible : Visibility.Collapsed;
+    public bool LargeSearchResultCovers => _settings.LargeSearchResultCovers;
 
     public MainWindow()
     {
@@ -126,6 +127,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         Directory.CreateDirectory(AppDataDir);
         LoadSettings();
+        ApplySearchResultCoverLayout();
         AppThemeService.Apply(Application.Current, _settings.ThemeMode);
         if (_settings.PersistDownloadQueue)
         {
@@ -137,6 +139,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         QueueSourceButton.IsEnabled = false;
         DownloadButton.IsEnabled = false;
         ApplyVideoDetailsVisibility();
+        ApplyFavoritesModeUi();
         UpdatePageNavigationUi();
         UpdateFilterSummaryUi();
         ResetQueueRunSummaryState();
@@ -153,7 +156,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         LoadDownloadHistory();
         HistoryList.ItemsSource = _historyItems;
         FavoritesFolderBox.ItemsSource = _favoriteFolders.Keys.ToList();
-        FavoritesFolderBox.SelectedItem = DefaultFavoritesFolder;
+        FavoritesFolderBox.SelectedItem = GetCurrentDefaultFavoritesFolder();
         RefreshFavoritesView();
         RefreshHistoryView();
     }
@@ -264,6 +267,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         RestoreWindowBounds();
         LoadPersistedBrowsingData();
         _ = CheckForUpdatesOnStartupAsync();
+        var startupStatus = "已启动，如遇访问问题请手动验证。";
         try
         {
             _cloudflareWindow ??= new CloudflareWindow(_settings.SiteHost) { Owner = this };
@@ -272,41 +276,42 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             // 先静默复用浏览器里现存的 Cloudflare 会话（后台通过托管挑战，不弹窗）。
             // 成功就完全不碰磁盘缓存，避免用旧 Cookie 覆盖掉仍然有效的会话。
             var reused = await TryReuseSessionSilentlyAsync("启动时自动恢复会话");
-            if (reused)
-            {
-                ApplyStartupWarnings($"已自动恢复 Cloudflare 会话。当前共 {_appState.Cookies.Count} 个 Cookie。");
-                return;
-            }
 
             // 会话确实不可用时，才导入磁盘缓存里的 Cookie 再试一次。
-            var cached = LoadCookieCache();
-            if (cached.Count > 0)
+            if (!reused)
             {
-                try
+                var cached = LoadCookieCache();
+                if (cached.Count > 0)
                 {
-                    await _cloudflareWindow.ImportCookiesAsync(cached);
-                    reused = await TryReuseSessionSilentlyAsync("导入缓存 Cookie 后自动恢复会话");
-                }
-                catch (Exception ex)
-                {
-                    LogInfo("cloudflare", $"导入缓存 Cookie 后自动恢复失败: {ex.Message}");
+                    try
+                    {
+                        await _cloudflareWindow.ImportCookiesAsync(cached);
+                        reused = await TryReuseSessionSilentlyAsync("导入缓存 Cookie 后自动恢复会话");
+                    }
+                    catch (Exception ex)
+                    {
+                        LogInfo("cloudflare", $"导入缓存 Cookie 后自动恢复失败: {ex.Message}");
+                    }
                 }
             }
 
             if (reused)
             {
-                ApplyStartupWarnings($"已自动恢复 Cloudflare 会话。当前共 {_appState.Cookies.Count} 个 Cookie。");
-                return;
+                startupStatus = $"已自动恢复 Cloudflare 会话。当前共 {_appState.Cookies.Count} 个 Cookie。";
             }
-
-            InitSessionWithoutCf();
-            ApplyStartupWarnings("已启动，如遇访问问题请手动验证。");
+            else
+            {
+                InitSessionWithoutCf();
+            }
         }
         catch (Exception ex)
         {
             HandleUiActionError("startup", "初始化失败", ex);
             InitSessionWithoutCf();
         }
+
+        ApplyStartupWarnings(startupStatus);
+        await SyncAccountFavoritesOnStartupAsync();
 
         // 孤儿临时文件清理：只删 7 天前且不被当前队列引用的 .tmp/.hls。
         // 引用集合在 UI 线程构建（ObservableCollection 非线程安全），扫描放到后台线程。
@@ -402,11 +407,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private CancellationTokenSource? _titleCopiedHintCts;
 
-    private void SettingsButton_OnClick(object sender, RoutedEventArgs e)
+    private async void SettingsButton_OnClick(object sender, RoutedEventArgs e)
     {
         try
         {
-            var dialog = new SettingsDialog(_settings) { Owner = this };
+            var dialog = new SettingsDialog(_settings, BindAccountAsync) { Owner = this };
             if (dialog.ShowDialog() != true)
             {
                 return;
@@ -414,10 +419,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             var oldSiteHost = _settings.SiteHost;
             var oldPersistQueue = _settings.PersistDownloadQueue;
-            var oldShowListCovers = _settings.ShowListCovers;
+            var oldLargeSearchResultCovers = _settings.LargeSearchResultCovers;
+            var oldFavoritesMode = _settings.FavoritesMode;
+            var oldAccountUserId = _settings.AccountUserId;
+            var oldAccountEmail = _settings.AccountEmail;
+            var accountRebound = dialog.AccountBindingChanged;
             _settings.DownloadPath = dialog.Settings.DownloadPath;
             _settings.FileNamingRule = dialog.Settings.FileNamingRule;
             _settings.ShowListCovers = dialog.Settings.ShowListCovers;
+            _settings.LargeSearchResultCovers = dialog.Settings.LargeSearchResultCovers;
+            _settings.FavoritesMode = dialog.Settings.FavoritesMode;
+            _settings.AccountEmail = dialog.Settings.AccountEmail;
+            _settings.AccountUserId = dialog.Settings.AccountUserId;
+            _settings.AccountUserName = dialog.Settings.AccountUserName;
             _settings.ThemeMode = AppThemeService.Normalize(dialog.Settings.ThemeMode);
             _settings.DefaultQuality = dialog.Settings.DefaultQuality;
             _settings.SiteHost = dialog.Settings.SiteHost;
@@ -432,8 +446,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _videoDetailsInFlight.Clear();
             RefreshFavoritesView();
             ApplyVideoDetailsVisibility();
-                OnPropertyChanged(nameof(ShowListCoversVisibility));
-            ApplyListCoverSettingChange(oldShowListCovers);
+            ApplySearchResultCoverLayout();
+            OnPropertyChanged(nameof(ShowListCoversVisibility));
+            ApplyListCoverSettingChange(oldLargeSearchResultCovers);
+            var favoritesModeChanged = !string.Equals(oldFavoritesMode, _settings.FavoritesMode, StringComparison.OrdinalIgnoreCase);
+            if (favoritesModeChanged)
+            {
+                ReloadFavoritesForCurrentMode();
+                ApplyFavoritesModeUi();
+            }
 
             if (oldSiteHost != _settings.SiteHost)
             {
@@ -441,6 +462,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 _cloudflareWindow = null;
                 _apiClient = null;
                 _downloadService = null;
+                _accountService = null;
+                _accountServiceSiteHost = string.Empty;
 
                 var cachedCookies = LoadCookieCache().ToList();
                 _appState.Cookies = cachedCookies;
@@ -450,7 +473,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
                 if (cachedCookies.Count > 0)
                 {
-                    _ = SyncCachedCookiesToBrowserAsync(cachedCookies);
+                    if (IsAccountFavoritesMode)
+                    {
+                        await SyncCachedCookiesToBrowserAsync(cachedCookies);
+                    }
+                    else
+                    {
+                        _ = SyncCachedCookiesToBrowserAsync(cachedCookies);
+                    }
                     StatusText.Text = $"站点已切换为 {_settings.SiteHost}，已同步对应站点的 Cookie 缓存。";
                 }
                 else
@@ -474,6 +504,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             else
             {
                 StatusText.Text = "设置已保存。";
+            }
+
+            var accountBindingChanged =
+                !string.Equals(oldAccountUserId, _settings.AccountUserId, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(oldAccountEmail, _settings.AccountEmail, StringComparison.OrdinalIgnoreCase);
+            if (IsAccountFavoritesMode && (favoritesModeChanged || accountBindingChanged || accountRebound))
+            {
+                await SyncAccountFavoritesAsync();
             }
         }
         catch (Exception ex)
@@ -506,6 +544,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _settings.DownloadPath = ResolveDownloadPath(loaded.DownloadPath);
             _settings.FileNamingRule = string.IsNullOrWhiteSpace(loaded.FileNamingRule) ? _settings.FileNamingRule : loaded.FileNamingRule;
             _settings.ShowListCovers = loaded.ShowListCovers;
+            _settings.LargeSearchResultCovers = loaded.LargeSearchResultCovers;
+            _settings.FavoritesMode = string.Equals(loaded.FavoritesMode, AppSettings.AccountFavoritesMode, StringComparison.OrdinalIgnoreCase)
+                ? AppSettings.AccountFavoritesMode
+                : AppSettings.LocalFavoritesMode;
+            _settings.AccountEmail = loaded.AccountEmail?.Trim() ?? string.Empty;
+            _settings.AccountUserId = loaded.AccountUserId?.Trim() ?? string.Empty;
+            _settings.AccountUserName = loaded.AccountUserName?.Trim() ?? string.Empty;
             _settings.DefaultQuality = loaded.DefaultQuality is "highest" or "lowest" or "720" or "480"
                 ? loaded.DefaultQuality
                 : _settings.DefaultQuality;
@@ -750,19 +795,34 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return dialog.ShowDialog() == true ? dialog.InputText.Trim() : null;
     }
 
-    private void ApplyListCoverSettingChange(bool previousShowListCovers)
+    private void ApplySearchResultCoverLayout()
     {
-        if (_settings.ShowListCovers)
+        SearchResultsColumn.MinWidth = _settings.LargeSearchResultCovers ? 280 : 236;
+        OnPropertyChanged(nameof(LargeSearchResultCovers));
+    }
+
+    private void ApplyListCoverSettingChange(bool previousLargeSearchResultCovers)
+    {
+        if (previousLargeSearchResultCovers != _settings.LargeSearchResultCovers)
         {
-            PrimeThumbnails(_searchResults);
-            PrimeThumbnails(_favoriteFolders.Values.SelectMany(items => items));
-            PrimeThumbnails(GetCurrentRelatedVideos());
+            ResetSearchResultCoverImages();
+        }
+
+        if (!_settings.ShowListCovers)
+        {
             return;
         }
 
-        if (!previousShowListCovers)
+        PrimeSearchResultThumbnails();
+        PrimeThumbnails(_favoriteFolders.Values.SelectMany(items => items));
+        PrimeThumbnails(GetCurrentRelatedVideos());
+    }
+
+    private void ResetSearchResultCoverImages()
+    {
+        foreach (var summary in _searchResults)
         {
-            return;
+            summary.CoverImage = null;
         }
     }
 
@@ -779,15 +839,30 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         timer.Start();
     }
 
-    private async Task PrimeThumbnailAsync(VideoSummary summary)
+    private int GetSearchResultThumbnailDecodeWidth()
+    {
+        return _settings.LargeSearchResultCovers ? 240 : 160;
+    }
+
+    private void PrimeSearchResultThumbnails()
+    {
+        PrimeThumbnails(_searchResults, useLargeSearchResultCover: true);
+    }
+
+    private async Task PrimeThumbnailAsync(VideoSummary summary, bool useLargeSearchResultCover = false)
     {
         if (!_settings.ShowListCovers || summary.CoverImage is not null || string.IsNullOrWhiteSpace(summary.CoverUrl))
         {
             return;
         }
 
-        var image = await ThumbnailCacheService.GetAsync(summary.CoverUrl, 160);
-        if (image is null || !_settings.ShowListCovers)
+        var decodePixelWidth = useLargeSearchResultCover
+            ? GetSearchResultThumbnailDecodeWidth()
+            : 160;
+        var image = await ThumbnailCacheService.GetAsync(summary.CoverUrl, decodePixelWidth);
+        var decodeWidthStillCurrent = !useLargeSearchResultCover ||
+                                      decodePixelWidth == GetSearchResultThumbnailDecodeWidth();
+        if (image is null || !_settings.ShowListCovers || !decodeWidthStillCurrent)
         {
             return;
         }
@@ -796,7 +871,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             await Dispatcher.InvokeAsync(() =>
             {
-                if (_settings.ShowListCovers)
+                if (_settings.ShowListCovers && decodeWidthStillCurrent)
                 {
                     summary.CoverImage = image;
                 }
@@ -804,13 +879,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        if (_settings.ShowListCovers)
+        if (_settings.ShowListCovers && decodeWidthStillCurrent)
         {
             summary.CoverImage = image;
         }
     }
 
-    private void PrimeThumbnails(IEnumerable<VideoSummary> items)
+    private void PrimeThumbnails(IEnumerable<VideoSummary> items, bool useLargeSearchResultCover = false)
     {
         if (!_settings.ShowListCovers)
         {
@@ -821,7 +896,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         // 并发由 ThumbnailCacheService 的 8 路信号量限制。
         foreach (var item in items)
         {
-            _ = PrimeThumbnailAsync(item);
+            _ = PrimeThumbnailAsync(item, useLargeSearchResultCover);
         }
     }
 

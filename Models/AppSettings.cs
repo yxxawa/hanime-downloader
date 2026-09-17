@@ -6,11 +6,19 @@ namespace Hanime1Downloader.CSharp.Models;
 
 public sealed class AppSettings
 {
+    public const string LocalFavoritesMode = "local";
+    public const string AccountFavoritesMode = "account";
+
     public static string DefaultDownloadPath => AppPaths.DefaultDownloadDirectory;
 
     public string DownloadPath { get; set; } = DefaultDownloadPath;
     public string FileNamingRule { get; set; } = "{title}_{videoId}";
     public bool ShowListCovers { get; set; } = true;
+    public bool LargeSearchResultCovers { get; set; }
+    public string FavoritesMode { get; set; } = LocalFavoritesMode;
+    public string AccountEmail { get; set; } = string.Empty;
+    public string AccountUserId { get; set; } = string.Empty;
+    public string AccountUserName { get; set; } = string.Empty;
     public string DefaultQuality { get; set; } = "highest";
     public string SiteHost { get; set; } = "hanime1.com";
     public List<string> CustomSiteHosts { get; set; } = [];

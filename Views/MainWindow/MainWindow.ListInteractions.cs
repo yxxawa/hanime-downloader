@@ -277,14 +277,25 @@ public partial class MainWindow
 
         if (isFavoriteList)
         {
-            var removeItem = new MenuItem { Header = "移除" };
-            removeItem.Click += (_, _) => RemoveSelectedFavorites(selectedVideos);
+            var removeItem = new MenuItem { Header = IsAccountFavoritesMode ? "取消账号收藏" : "移除" };
+            if (IsAccountFavoritesMode)
+            {
+                removeItem.Click += async (_, _) => await RemoveSelectedAccountFavoritesAsync(selectedVideos);
+            }
+            else
+            {
+                removeItem.Click += (_, _) => RemoveSelectedFavorites(selectedVideos);
+            }
             menu.Items.Add(removeItem);
         }
         else
         {
-            var favoriteItem = new MenuItem { Header = "添加到收藏夹" };
-            if (_favoriteFolders.Count > 1)
+            var favoriteItem = new MenuItem { Header = IsAccountFavoritesMode ? "添加到账号收藏" : "添加到收藏夹" };
+            if (IsAccountFavoritesMode)
+            {
+                favoriteItem.Click += async (_, _) => await AddVideosToAccountFavoritesAsync(selectedVideos);
+            }
+            else if (_favoriteFolders.Count > 1)
             {
                 foreach (var folderName in _favoriteFolders.Keys)
                 {

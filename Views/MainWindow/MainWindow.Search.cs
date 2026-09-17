@@ -325,7 +325,7 @@ public partial class MainWindow
             _searchResults = new ObservableCollection<VideoSummary>(searchPage.Results);
             ApplyDownloadedFlags(_searchResults);
             ResultsList.ItemsSource = _searchResults;
-            PrimeThumbnails(_searchResults);
+            PrimeSearchResultThumbnails();
 
             _currentPage = searchPage.CurrentPage;
             _totalPages = searchPage.TotalPages;

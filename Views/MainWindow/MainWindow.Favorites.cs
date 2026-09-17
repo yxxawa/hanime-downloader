@@ -26,12 +26,18 @@ namespace Hanime1Downloader.CSharp;
 public partial class MainWindow
 {
 
-    private void AddFavoriteButton_OnClick(object sender, RoutedEventArgs e)
+    private async void AddFavoriteButton_OnClick(object sender, RoutedEventArgs e)
     {
         var summary = GetSelectedVideoSummary();
         if (summary is null)
         {
             StatusText.Text = "请先在搜索结果或收藏夹里选中一个视频。";
+            return;
+        }
+
+        if (IsAccountFavoritesMode)
+        {
+            await ToggleAccountFavoriteAsync(summary);
             return;
         }
 
@@ -75,6 +81,11 @@ public partial class MainWindow
 
     private void RemoveVideoFromFavorites(string videoId)
     {
+        if (!TryEnsureLocalFavoritesMode())
+        {
+            return;
+        }
+
         var removedCount = 0;
         foreach (var favorites in _favoriteFolders.Values)
         {
@@ -112,6 +123,11 @@ public partial class MainWindow
 
     private void AddVideoToFavoriteFolder(VideoSummary summary, string folderName)
     {
+        if (!TryEnsureLocalFavoritesMode())
+        {
+            return;
+        }
+
         if (!_favoriteFolders.TryGetValue(folderName, out var favorites))
         {
             favorites = [];
@@ -162,6 +178,11 @@ public partial class MainWindow
 
     private void NewFavoriteFolderButton_OnClick(object sender, RoutedEventArgs e)
     {
+        if (!TryEnsureLocalFavoritesMode())
+        {
+            return;
+        }
+
         var folderName = PromptForFolderName("新建收藏夹", "请输入收藏夹名称：");
         if (string.IsNullOrWhiteSpace(folderName))
         {
@@ -183,6 +204,11 @@ public partial class MainWindow
 
     private void DeleteFavoriteFolderButton_OnClick(object sender, RoutedEventArgs e)
     {
+        if (!TryEnsureLocalFavoritesMode())
+        {
+            return;
+        }
+
         var currentFolder = FavoritesFolderBox.SelectedItem as string ?? DefaultFavoritesFolder;
         if (string.Equals(currentFolder, DefaultFavoritesFolder, StringComparison.OrdinalIgnoreCase))
         {
@@ -216,6 +242,11 @@ public partial class MainWindow
 
     private void RenameFavoriteFolderButton_OnClick(object sender, RoutedEventArgs e)
     {
+        if (!TryEnsureLocalFavoritesMode())
+        {
+            return;
+        }
+
         var currentFolder = FavoritesFolderBox.SelectedItem as string ?? DefaultFavoritesFolder;
         if (string.Equals(currentFolder, DefaultFavoritesFolder, StringComparison.OrdinalIgnoreCase))
         {
@@ -314,6 +345,11 @@ public partial class MainWindow
 
     private void ImportFavoritesButton_OnClick(object sender, RoutedEventArgs e)
     {
+        if (!TryEnsureLocalFavoritesMode())
+        {
+            return;
+        }
+
         var dialog = new OpenFileDialog
         {
             Filter = "JSON Files|*.json|All Files|*.*"
@@ -376,15 +412,22 @@ public partial class MainWindow
     {
         _favoriteFolders.Clear();
 
-        if (!File.Exists(FavoritesFilePath))
+        if (IsAccountFavoritesMode)
         {
-            _favoriteFolders[DefaultFavoritesFolder] = [];
+            _favoriteFolders[AccountFavoritesFolder] = [];
+            return;
+        }
+
+        var favoritesFilePath = AppPaths.FavoritesFile;
+        if (!File.Exists(favoritesFilePath))
+        {
+            _favoriteFolders[GetCurrentDefaultFavoritesFolder()] = [];
             return;
         }
 
         try
         {
-            var importedFolders = ParseFavoriteImport(File.ReadAllText(FavoritesFilePath));
+            var importedFolders = ParseFavoriteImport(File.ReadAllText(favoritesFilePath));
             foreach (var (folderName, videos) in importedFolders)
             {
                 _favoriteFolders[folderName] = new ObservableCollection<VideoSummary>(videos);
@@ -392,24 +435,29 @@ public partial class MainWindow
         }
         catch (Exception ex)
         {
-            LogError("startup", $"读取收藏夹失败: {FavoritesFilePath}", ex);
+            LogError("startup", $"读取收藏夹失败: {favoritesFilePath}", ex);
             AddStartupWarning("收藏夹读取失败，已使用空收藏夹");
             _favoriteFolders.Clear();
         }
 
         if (_favoriteFolders.Count == 0)
         {
-            _favoriteFolders[DefaultFavoritesFolder] = [];
+            _favoriteFolders[GetCurrentDefaultFavoritesFolder()] = [];
         }
     }
 
     private void SaveFavorites()
     {
+        if (IsAccountFavoritesMode)
+        {
+            return;
+        }
+
         var exportData = _favoriteFolders.ToDictionary(
             item => item.Key,
             item => GetFavoriteRecords(item.Value),
             StringComparer.OrdinalIgnoreCase);
-        AtomicFile.WriteAllText(FavoritesFilePath, JsonSerializer.Serialize(exportData, FavoritesJsonOptions));
+        AtomicFile.WriteAllText(AppPaths.FavoritesFile, JsonSerializer.Serialize(exportData, FavoritesJsonOptions));
     }
 
     private bool TrySaveFavorites(string category, string failureMessage)

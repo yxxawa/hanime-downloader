@@ -17,10 +17,23 @@ public partial class SettingsDialog : Window
     private static readonly Regex SiteHostRegex = new(@"^[a-z0-9.-]+$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly string[] PresetSiteHosts = ["hanime1.me", "hanime1.com", "hanimeone.me", "javchu.com"];
     private readonly ObservableCollection<SiteOption> _siteOptions = [];
+    private readonly Func<string, string, Task<HanimeAccountIdentity>>? _bindAccountAsync;
+    private bool _isBindingAccount;
+    private string _boundEmail = string.Empty;
+    private string _boundUserId = string.Empty;
+    private string _boundUserName = string.Empty;
     public AppSettings Settings { get; }
+    public bool AccountBindingChanged { get; private set; }
 
-    public SettingsDialog(AppSettings currentSettings)
+
+    public SettingsDialog(
+        AppSettings currentSettings,
+        Func<string, string, Task<HanimeAccountIdentity>>? bindAccountAsync = null)
     {
+        _bindAccountAsync = bindAccountAsync;
+        _boundEmail = string.IsNullOrWhiteSpace(currentSettings.AccountUserId) ? string.Empty : currentSettings.AccountEmail;
+        _boundUserId = currentSettings.AccountUserId;
+        _boundUserName = currentSettings.AccountUserName;
         InitializeComponent();
         VersionText.Text = "v" + UpdateChecker.GetCurrentVersion();
         Settings = new AppSettings
@@ -28,6 +41,11 @@ public partial class SettingsDialog : Window
             DownloadPath = currentSettings.DownloadPath,
             FileNamingRule = currentSettings.FileNamingRule,
             ShowListCovers = currentSettings.ShowListCovers,
+            LargeSearchResultCovers = currentSettings.LargeSearchResultCovers,
+            FavoritesMode = currentSettings.FavoritesMode,
+            AccountEmail = currentSettings.AccountEmail,
+            AccountUserId = currentSettings.AccountUserId,
+            AccountUserName = currentSettings.AccountUserName,
             ThemeMode = currentSettings.ThemeMode,
             DefaultQuality = currentSettings.DefaultQuality,
             SiteHost = currentSettings.SiteHost,
@@ -79,6 +97,12 @@ public partial class SettingsDialog : Window
             new() { Label = "深色", Value = "dark" }
         };
 
+        FavoritesModeCombo.ItemsSource = new List<NamingRuleOption>
+        {
+            new() { Label = "本地模式", Value = AppSettings.LocalFavoritesMode },
+            new() { Label = "同步账号", Value = AppSettings.AccountFavoritesMode }
+        };
+
         MaxConcurrentDownloadsCombo.ItemsSource = new List<NamingRuleOption>
         {
             new() { Label = "1", Value = "1" },
@@ -96,7 +120,13 @@ public partial class SettingsDialog : Window
         SiteCombo.Text = normalizedCurrentSiteHost;
         QualityCombo.SelectedValue = Settings.DefaultQuality;
         ThemeModeCombo.SelectedValue = Settings.ThemeMode;
+        FavoritesModeCombo.SelectedValue = Settings.FavoritesMode;
+        AccountEmailBox.Text = Settings.AccountEmail;
+        UpdateAccountStatusText();
+        UpdateBindAccountButtonState();
+        UpdateAccountOptionsVisibility();
         ShowListCoversCheckBox.IsChecked = Settings.ShowListCovers;
+        LargeSearchResultCoversCheckBox.IsChecked = Settings.LargeSearchResultCovers;
         PersistQueueCheckBox.IsChecked = Settings.PersistDownloadQueue;
         MaxConcurrentDownloadsCombo.SelectedValue = Math.Clamp(Settings.MaxConcurrentDownloads, 1, 3).ToString();
         MaxRetriesCombo.SelectedValue = Math.Clamp(Settings.MaxRetries, 0, 8).ToString();
@@ -118,6 +148,123 @@ public partial class SettingsDialog : Window
         UpdateSiteHint();
     }
 
+    private void FavoritesModeCombo_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        UpdateAccountOptionsVisibility();
+        UpdateAccountStatusText();
+        UpdateBindAccountButtonState();
+    }
+
+    private void AccountCredential_OnChanged(object sender, RoutedEventArgs e)
+    {
+        UpdateAccountStatusText();
+        UpdateBindAccountButtonState();
+    }
+
+    private void UpdateAccountOptionsVisibility()
+    {
+        if (AccountOptionsPanel is null)
+        {
+            return;
+        }
+
+        var isAccountMode = string.Equals(
+            FavoritesModeCombo.SelectedValue as string,
+            AppSettings.AccountFavoritesMode,
+            StringComparison.OrdinalIgnoreCase);
+        AccountOptionsPanel.Visibility = isAccountMode ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void UpdateAccountStatusText()
+    {
+        if (AccountStatusText is null)
+        {
+            return;
+        }
+
+        var currentEmail = AccountEmailBox?.Text.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(_boundUserId) ||
+            !string.Equals(currentEmail, _boundEmail, StringComparison.OrdinalIgnoreCase))
+        {
+            AccountStatusText.Text = "账号状态：未绑定";
+            return;
+        }
+
+        var displayName = string.IsNullOrWhiteSpace(_boundUserName) ? "未知昵称" : _boundUserName;
+        AccountStatusText.Text = $"账号状态：{displayName}（ID: {_boundUserId}）";
+    }
+
+    private void UpdateBindAccountButtonState()
+    {
+        if (BindAccountButton is null)
+        {
+            return;
+        }
+
+        var isAccountMode = string.Equals(
+            FavoritesModeCombo?.SelectedValue as string,
+            AppSettings.AccountFavoritesMode,
+            StringComparison.OrdinalIgnoreCase);
+        var currentEmail = AccountEmailBox?.Text.Trim() ?? string.Empty;
+        var isBoundToCurrentEmail = !string.IsNullOrWhiteSpace(_boundUserId) &&
+                                    string.Equals(currentEmail, _boundEmail, StringComparison.OrdinalIgnoreCase);
+        BindAccountButton.Content = isBoundToCurrentEmail ? "重新绑定" : "绑定账号";
+        BindAccountButton.IsEnabled = isAccountMode &&
+                                      !_isBindingAccount &&
+                                      !string.IsNullOrWhiteSpace(AccountEmailBox?.Text) &&
+                                      !string.IsNullOrWhiteSpace(AccountPasswordBox?.Password);
+    }
+
+    private async void BindAccountButton_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (_bindAccountAsync is null)
+        {
+            MessageBox.Show(this, "当前窗口无法执行账号绑定。", "绑定账号", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var email = AccountEmailBox.Text.Trim();
+        var password = AccountPasswordBox.Password;
+        if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password))
+        {
+            MessageBox.Show(this, "请输入账号邮箱和密码。", "绑定账号", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var bindingSiteHost = NormalizeSiteHost(SiteCombo.Text);
+        if (!string.Equals(bindingSiteHost, Settings.SiteHost, StringComparison.OrdinalIgnoreCase))
+        {
+            MessageBox.Show(this, "请先保存站点切换，再重新打开设置绑定账号。", "绑定账号", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        _isBindingAccount = true;
+        UpdateBindAccountButtonState();
+        AccountStatusText.Text = "账号状态：正在绑定...";
+        try
+        {
+            var identity = await _bindAccountAsync(email, password);
+            _boundEmail = email;
+            _boundUserId = identity.UserId;
+            _boundUserName = identity.UserName;
+            Settings.AccountEmail = email;
+            Settings.AccountUserId = identity.UserId;
+            Settings.AccountUserName = identity.UserName;
+            AccountBindingChanged = true;
+            AccountPasswordBox.Clear();
+            UpdateAccountStatusText();
+        }
+        catch (Exception ex)
+        {
+            AccountStatusText.Text = "账号状态：绑定失败";
+            MessageBox.Show(this, ex.Message, "绑定账号失败", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            _isBindingAccount = false;
+            UpdateBindAccountButtonState();
+        }
+    }
     private async void CheckUpdateButton_OnClick(object sender, RoutedEventArgs e)
     {
         CheckUpdateButton.IsEnabled = false;
@@ -282,12 +429,40 @@ public partial class SettingsDialog : Window
             return;
         }
 
+        var favoritesMode = FavoritesModeCombo.SelectedValue as string ?? AppSettings.LocalFavoritesMode;
+        var accountEmail = AccountEmailBox.Text.Trim();
+        if (favoritesMode == AppSettings.AccountFavoritesMode && string.IsNullOrWhiteSpace(accountEmail))
+        {
+            MessageBox.Show(this, "同步账号模式需要填写账号邮箱。", "保存设置", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (favoritesMode == AppSettings.AccountFavoritesMode &&
+            !string.Equals(siteHost, Settings.SiteHost, StringComparison.OrdinalIgnoreCase))
+        {
+            MessageBox.Show(this, "同步账号模式切换站点后需要先保存站点设置，再重新绑定账号。", "保存设置", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (favoritesMode == AppSettings.AccountFavoritesMode &&
+            (string.IsNullOrWhiteSpace(_boundUserId) ||
+             !string.Equals(accountEmail, _boundEmail, StringComparison.OrdinalIgnoreCase)))
+        {
+            MessageBox.Show(this, "请先点击「绑定账号」完成账号验证。", "保存设置", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         AddCustomSiteIfNeeded(siteHost);
         Settings.DownloadPath = downloadPath;
         Settings.FileNamingRule = NamingRuleCombo.SelectedValue as string ?? "{title}";
         Settings.SiteHost = siteHost;
         Settings.DefaultQuality = QualityCombo.SelectedValue as string ?? "highest";
         Settings.ShowListCovers = ShowListCoversCheckBox.IsChecked == true;
+        Settings.LargeSearchResultCovers = LargeSearchResultCoversCheckBox.IsChecked == true;
+        Settings.FavoritesMode = favoritesMode;
+        Settings.AccountEmail = accountEmail;
+        Settings.AccountUserId = _boundUserId;
+        Settings.AccountUserName = _boundUserName;
         Settings.ThemeMode = ThemeModeCombo.SelectedValue as string ?? "light";
         Settings.PersistDownloadQueue = PersistQueueCheckBox.IsChecked == true;
         Settings.MaxConcurrentDownloads = int.TryParse(MaxConcurrentDownloadsCombo.SelectedValue as string, out var maxConcurrentDownloads)

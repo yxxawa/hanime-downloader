@@ -65,7 +65,8 @@
 
 **收藏与数据**
 
-- 多收藏夹管理：新建、重命名、删除、导入 / 导出
+- 多收藏夹管理：新建、重命名、删除、导入 / 导出（本地模式）
+- 收藏夹模式：默认本地模式，也可切换为同步账号；支持绑定账号并显示昵称 / ID。账号模式通过刷新按钮或重启拉取接口，新增 / 取消收藏直接调用站点接口并原地更新列表，不写入本地收藏文件
 - 数据统一保存在 `%LOCALAPPDATA%\Hanime1Downloader.CSharp`，exe 目录保持干净
 
 **个性化**
@@ -114,7 +115,7 @@ dotnet publish "Hanime1Downloader.CSharp.csproj" -c Release -p:DebugType=None -p
 | 文件 | 说明 |
 |:---|:---|
 | `settings.json` | 程序设置（含主窗口位置、搜索历史） |
-| `favorites.json` | 收藏夹数据 |
+| `favorites.json` | 本地收藏夹数据 |
 | `download_history.json` | 下载历史 |
 | `download_queue.json` | 下载队列（可配置是否保留） |
 | `cookies.{host}.json` | 各站点的 Cloudflare 会话缓存（`cookies.json` 为旧版格式） |

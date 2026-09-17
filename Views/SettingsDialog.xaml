@@ -252,6 +252,54 @@
                 </ScrollViewer>
             </TabItem>
 
+            <TabItem Header="收藏夹">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="2,12,8,0">
+                    <StackPanel>
+                        <GroupBox Header="收藏夹来源" Style="{StaticResource SectionGroupStyle}">
+                            <StackPanel>
+                                <DockPanel Style="{StaticResource FormRowStyle}">
+                                    <TextBlock Style="{StaticResource RowLabelStyle}" Text="收藏夹模式:"/>
+                                    <ComboBox x:Name="FavoritesModeCombo"
+                                              Height="30"
+                                              DisplayMemberPath="Label"
+                                              SelectedValuePath="Value"
+                                              SelectionChanged="FavoritesModeCombo_OnSelectionChanged"/>
+                                </DockPanel>
+                                <StackPanel x:Name="AccountOptionsPanel">
+                                    <DockPanel Style="{StaticResource FormRowStyle}">
+                                        <TextBlock Style="{StaticResource RowLabelStyle}" Text="账号邮箱:"/>
+                                        <TextBox x:Name="AccountEmailBox"
+                                                 Height="30"
+                                                 VerticalContentAlignment="Center"
+                                                 Padding="8,0"
+                                                 TextChanged="AccountCredential_OnChanged"/>
+                                    </DockPanel>
+                                    <DockPanel Style="{StaticResource FormRowStyle}">
+                                        <TextBlock Style="{StaticResource RowLabelStyle}" Text="账号密码:"/>
+                                        <PasswordBox x:Name="AccountPasswordBox"
+                                                     Height="30"
+                                                     VerticalContentAlignment="Center"
+                                                     Padding="8,0"
+                                                     PasswordChanged="AccountCredential_OnChanged"/>
+                                    </DockPanel>
+                                    <DockPanel Style="{StaticResource FormRowStyle}" LastChildFill="False">
+                                        <TextBlock Style="{StaticResource RowLabelStyle}" Text="账号绑定:"/>
+                                        <Button x:Name="BindAccountButton"
+                                                Width="96"
+                                                Content="绑定账号"
+                                                Style="{StaticResource DialogButtonStyle}"
+                                                Click="BindAccountButton_OnClick"/>
+                                    </DockPanel>
+                                    <TextBlock x:Name="AccountStatusText" Style="{StaticResource FormHintStyle}" Margin="118,0,0,4"/>
+                                    <TextBlock Style="{StaticResource FormHintStyle}"
+                                               Text="同步账号模式会在每次启动时同步一次账号收藏夹。密码只用于绑定，不会写入配置文件；收藏与取消收藏直接调用站点接口。"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </GroupBox>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
             <TabItem Header="界面">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="2,12,8,0">
                     <StackPanel>
@@ -264,6 +312,11 @@
                                 <CheckBox x:Name="ShowListCoversCheckBox"
                                           Style="{StaticResource FormCheckBoxStyle}"
                                           Content="在列表中显示视频封面"/>
+                                <CheckBox x:Name="LargeSearchResultCoversCheckBox"
+                                          Style="{StaticResource FormCheckBoxStyle}"
+                                          Content="放大搜索结果封面（160×90）"
+                                          ToolTip="仅在开启“在列表中显示视频封面”后生效"
+                                          IsEnabled="{Binding IsChecked, ElementName=ShowListCoversCheckBox}"/>
                             </StackPanel>
                         </GroupBox>
 

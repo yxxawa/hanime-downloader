@@ -186,6 +186,71 @@ public partial class CloudflareWindow
         }
     }
 
+    /// <summary>
+    /// 在当前 WebView2 页面上下文里提交 application/x-www-form-urlencoded 表单，并返回响应 HTML。
+    /// 浏览器会自动处理登录响应中的 Set-Cookie。
+    /// </summary>
+    public async Task<BrowserFetchResult?> PostFormInPageAsync(
+        string relativeUrl,
+        IReadOnlyDictionary<string, string> formFields,
+        string? csrfToken = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync();
+        if (Browser.CoreWebView2 is null || !IsCurrentPageOnSite())
+        {
+            return null;
+        }
+
+        var targetUrl = new Uri(new Uri(_siteBaseUrl), relativeUrl).ToString();
+        var urlLiteral = JsonSerializer.Serialize(targetUrl);
+        var fieldsLiteral = JsonSerializer.Serialize(formFields.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal));
+        var tokenLiteral = JsonSerializer.Serialize(csrfToken ?? string.Empty);
+        var slot = "__hanimePost_" + Guid.NewGuid().ToString("N");
+        var slotLiteral = JsonSerializer.Serialize(slot);
+        var script =
+            "(function(){(async function(){try{const p=new URLSearchParams(" + fieldsLiteral + ");" +
+            "const r=await fetch(" + urlLiteral + ",{method:'POST',credentials:'include',redirect:'follow'," +
+            "headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8','X-Requested-With':'XMLHttpRequest','X-CSRF-TOKEN':" + tokenLiteral + "}," +
+            "body:p.toString()});const t=await r.text();chrome.webview.postMessage({slot:" + slotLiteral + ",status:r.status,url:r.url,html:t});}" +
+            "catch(e){chrome.webview.postMessage({slot:" + slotLiteral + ",status:-1,url:'',html:'',error:String(e)});}})();})();";
+
+        var completion = new TaskCompletionSource<ScriptFetchPayload>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _scriptFetchWaiters[slot] = completion;
+        try
+        {
+            await Browser.CoreWebView2.ExecuteScriptAsync(script);
+            var fetched = await completion.Task.WaitAsync(ScriptFetchTimeout, cancellationToken);
+            if (fetched.Status <= 0)
+            {
+                AppLogger.Info("http", $"页内 POST 失败: {relativeUrl} {fetched.Error}");
+                return null;
+            }
+
+            return new BrowserFetchResult
+            {
+                Status = fetched.Status,
+                Url = string.IsNullOrWhiteSpace(fetched.Url) ? targetUrl : fetched.Url,
+                Html = fetched.Html ?? string.Empty,
+                Title = ExtractTitleFromHtml(fetched.Html)
+            };
+        }
+        catch (TimeoutException)
+        {
+            AppLogger.Info("http", $"页内 POST 超时: {relativeUrl}");
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            AppLogger.Info("http", $"页内 POST 注入失败: {relativeUrl} {ex.Message}");
+            return null;
+        }
+        finally
+        {
+            _scriptFetchWaiters.TryRemove(slot, out _);
+        }
+    }
+
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
         try
