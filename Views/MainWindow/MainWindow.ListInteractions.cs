@@ -275,6 +275,20 @@ public partial class MainWindow
         };
         menu.Items.Add(downloadItem);
 
+        var downloadNowItem = new MenuItem { Header = "加入队列并自动下载" };
+        downloadNowItem.Click += async (_, _) =>
+        {
+            try
+            {
+                await QueueVideosForDownloadAsync(selectedVideos, startImmediately: true);
+            }
+            catch (Exception ex)
+            {
+                HandleUiActionError("queue", "自动下载失败", ex);
+            }
+        };
+        menu.Items.Add(downloadNowItem);
+
         if (isFavoriteList)
         {
             var removeItem = new MenuItem { Header = IsAccountFavoritesMode ? "取消账号收藏" : "移除" };

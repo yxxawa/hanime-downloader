@@ -512,7 +512,7 @@ public partial class MainWindow
         }
     }
 
-    private async Task QueueVideosForDownloadAsync(IEnumerable<VideoSummary> videos)
+    private async Task QueueVideosForDownloadAsync(IEnumerable<VideoSummary> videos, bool startImmediately = false)
     {
         var added = 0;
         var alreadyInHistory = 0;
@@ -547,6 +547,11 @@ public partial class MainWindow
         StatusText.Text = alreadyInHistory > 0
             ? $"已加入下载队列 {added} 项（其中 {alreadyInHistory} 项已在下载历史中）。"
             : $"已加入下载队列 {added} 项。";
+
+        if (startImmediately && _downloadQueue.Count > 0 && !_isDownloadingQueue)
+        {
+            await StartQueueDownloadAsync();
+        }
     }
 
     private VideoSource? SelectSourceByQuality(IReadOnlyList<VideoSource>? sources)
@@ -582,8 +587,9 @@ public partial class MainWindow
         }
 
         LogInfo("queue", $"[{operationId}] 解析队列项源: videoId={item.VideoId}, quality={item.Quality}, forceRefresh={forceRefresh}");
-        // 队列只需视频源：走 download 页轻量加载（~30KB），不拉包含相关视频/简介的 watch 页（~148KB）。
-        var details = await GetOrLoadVideoDetailsAsync(item.VideoId, VideoDetailsLoadOptions.Basic | VideoDetailsLoadOptions.Sources, cancellationToken, forceRefresh);
+        // 下载命名必须使用 watch 页的完整标题（含作者前缀），不能复用列表/download 页的简略标题。
+        // Meta 使加载器读取 watch 页；已加载的完整详情仍可直接复用，不必逐个打开详情面板。
+        var details = await GetOrLoadVideoDetailsAsync(item.VideoId, VideoDetailsLoadOptions.Basic | VideoDetailsLoadOptions.Meta | VideoDetailsLoadOptions.Sources, cancellationToken, forceRefresh);
         cancellationToken.ThrowIfCancellationRequested();
         var requestedQuality = item.Quality;
         var source = SelectSourceForQueueItem(details?.Sources, item);
@@ -605,22 +611,17 @@ public partial class MainWindow
         item.Type = source.Type;
         item.Quality = source.Quality;
 
-        // 批量入队的项入队时 Quality=0，{quality} 命名会渲染成 unknown；解析出真实画质后刷新目标路径。
-        if (_settings.FileNamingRule.Contains("{quality}", StringComparison.OrdinalIgnoreCase) &&
-            item.TargetPath.Contains("unknown", StringComparison.OrdinalIgnoreCase))
+        // 详情就绪后再确定文件名，修正批量入队时只有列表标题/unknown 画质的临时路径。
+        // 已有成品、MP4 续传文件或 HLS 分片时保留旧路径，避免重解析导致丢失下载进度。
+        var hasExistingDownload = !string.IsNullOrWhiteSpace(item.TargetPath) &&
+            (File.Exists(item.TargetPath) || File.Exists(item.TargetPath + ".tmp") || Directory.Exists(item.TargetPath + ".hls"));
+        if (!hasExistingDownload)
         {
-            try
+            var regenerated = CreateQueueTargetPath(item.Title, item.Type, item.VideoId, item.Quality);
+            if (!string.Equals(regenerated, item.TargetPath, StringComparison.OrdinalIgnoreCase))
             {
-                var regenerated = CreateQueueTargetPath(item.Title, item.Type, item.VideoId, item.Quality);
-                if (!string.Equals(regenerated, item.TargetPath, StringComparison.OrdinalIgnoreCase))
-                {
-                    item.TargetPath = regenerated;
-                    LogInfo("queue", $"[{operationId}] 画质已确定，更新目标路径: {item.TargetPath}");
-                }
-            }
-            catch (Exception ex)
-            {
-                LogError("queue", $"重新生成目标路径失败，保持原路径: {item.TargetPath}", ex);
+                item.TargetPath = regenerated;
+                LogInfo("queue", $"[{operationId}] 完整详情已就绪，更新目标路径: {item.TargetPath}");
             }
         }
 
@@ -835,7 +836,7 @@ public partial class MainWindow
         _currentQueueDownloadItem = item;
         item.IsDownloading = true;
         item.HasError = false;
-        SetQueueItemVisualState(item, DownloadQueueState.Resolving, "解析", "解析中", showProgress: true, isProgressIndeterminate: true);
+        SetQueueItemVisualState(item, DownloadQueueState.Resolving, "解析", "读取完整标题和视频源", showProgress: true, isProgressIndeterminate: true);
         UpdateQueueRuntimeSummaryUi();
         LogInfo("queue", $"[{operationId}] 开始处理队列项: videoId={item.VideoId}, title={item.Title}, requestedQuality={item.Quality}");
 

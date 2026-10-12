@@ -148,7 +148,7 @@ public partial class CloudflareWindow : Window
             return;
         }
 
-        if (!IsLoaded)
+        if (!IsLoaded && !IsVisible)
         {
             // WebView2 必须进入可视化树才能初始化；把窗口放到屏幕外再 Show，
             // 避免启动时在桌面上闪出一个验证窗口。

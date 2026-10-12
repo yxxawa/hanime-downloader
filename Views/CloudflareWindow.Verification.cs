@@ -14,16 +14,21 @@ public partial class CloudflareWindow
 {
 
     /// <summary>
-    /// 获取/恢复 Cloudflare 会话。先在隐藏窗口里静默通过托管挑战（实测 1-4 秒，无需任何操作），
-    /// 只有长时间未通过（可能升级为需要点击的交互式验证）才显示窗口兜底。
+    /// 获取/恢复 Cloudflare 会话。自动恢复先静默验证，手动验证立即显示窗口并由用户确认完成。
     /// </summary>
-    public async Task<bool> VerifyAsync(bool forceRefresh = false, CancellationToken cancellationToken = default)
+    public async Task<bool> VerifyAsync(bool forceRefresh = false, CancellationToken cancellationToken = default, bool showImmediately = false)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (showImmediately)
+        {
+            ShowVerificationWindow("正在初始化内置浏览器，请在此窗口完成 Cloudflare 验证。");
+        }
+
         await EnsureInitializedAsync();
         cancellationToken.ThrowIfCancellationRequested();
         _verificationCompletionSource?.TrySetResult(false);
         _verificationCompletionSource = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _autoCompleteWhenReady = true;
+        _autoCompleteWhenReady = !showImmediately;
 
         // 用户取消（暂停等场景）时停止等待验证，不再无限挂起。
         using var cancellationRegistration = cancellationToken.Register(() =>
@@ -45,11 +50,18 @@ public partial class CloudflareWindow
         else
         {
             FinishButton.IsEnabled = false;
-            StatusText.Text = "正在后台获取 Cloudflare 会话，无需手动操作...";
+            StatusText.Text = showImmediately
+                ? "请在此窗口完成 Cloudflare 验证，然后点击“验证完成并继续”。"
+                : "正在后台获取 Cloudflare 会话，无需手动操作...";
         }
 
         Browser.CoreWebView2.Navigate(_siteBaseUrl);
         _pollTimer.Start();
+
+        if (showImmediately)
+        {
+            return await _verificationCompletionSource.Task;
+        }
 
         // 后台静默等待：窗口保持隐藏，托管挑战由挑战脚本自动完成。
         var hiddenDeadline = DateTime.UtcNow + HiddenChallengeGrace;
@@ -258,17 +270,33 @@ public partial class CloudflareWindow
         CompleteVerification();
     }
 
-    /// <summary>兜底路径：把验证窗口以正常大小显示在主窗口中央。</summary>
+    /// <summary>手动验证和兜底共用：恢复窗口状态并显式定位，避免沿用后台初始化的屏幕外坐标。</summary>
     private void ShowVerificationWindow(string status)
     {
         try
         {
-            WindowStartupLocation = WindowStartupLocation.CenterOwner;
+            WindowStartupLocation = WindowStartupLocation.Manual;
+            WindowState = WindowState.Normal;
             ShowInTaskbar = true;
             WindowStyle = WindowStyle.SingleBorderWindow;
             Topmost = false;
             Width = 520;
             Height = 480;
+            // WindowStartupLocation 只影响首次 Show；复用隐藏窗口必须直接重设坐标。
+            var bounds = Owner is { IsVisible: true, WindowState: not WindowState.Minimized }
+                ? Owner.RestoreBounds
+                : SystemParameters.WorkArea;
+            if (bounds.IsEmpty)
+            {
+                bounds = SystemParameters.WorkArea;
+            }
+
+            Left = Math.Clamp(bounds.Left + (bounds.Width - Width) / 2,
+                SystemParameters.VirtualScreenLeft,
+                Math.Max(SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth - Width));
+            Top = Math.Clamp(bounds.Top + (bounds.Height - Height) / 2,
+                SystemParameters.VirtualScreenTop,
+                Math.Max(SystemParameters.VirtualScreenTop, SystemParameters.VirtualScreenTop + SystemParameters.VirtualScreenHeight - Height));
             StatusText.Text = status;
             if (!IsVisible)
             {
@@ -279,7 +307,8 @@ public partial class CloudflareWindow
         }
         catch (Exception ex)
         {
-            AppLogger.Info("cloudflare", $"显示验证窗口失败: {ex.Message}");
+            AppLogger.Error("cloudflare", "显示验证窗口失败", ex);
+            throw;
         }
     }
 

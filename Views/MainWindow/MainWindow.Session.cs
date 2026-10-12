@@ -50,7 +50,7 @@ public partial class MainWindow
         var operationId = CreateOperationId("cfverify");
         _cloudflareWindow ??= new CloudflareWindow(_settings.SiteHost) { Owner = this };
         LogInfo("cloudflare", $"[{operationId}] 开始验证，会话站点={_settings.SiteHost}, forceRefresh={forceRefresh}");
-        var verified = await _cloudflareWindow.VerifyAsync(forceRefresh);
+        var verified = await _cloudflareWindow.VerifyAsync(forceRefresh, showImmediately: true);
         if (!verified || _cloudflareWindow.Cookies.Count == 0 || string.IsNullOrWhiteSpace(_cloudflareWindow.CookieHeader))
         {
             LogInfo("cloudflare", $"[{operationId}] 验证未拿到可用 Cookie");
