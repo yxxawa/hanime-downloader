@@ -36,6 +36,11 @@ public partial class CloudflareWindow
             Browser.CoreWebView2.Navigate(targetUrl);
             var navigation = await navigationCompletionSource.Task.WaitAsync(TimeSpan.FromSeconds(45), cancellationToken);
 
+            if (navigation.HttpStatusCode == 403)
+            {
+                throw new InvalidOperationException("站点返回 HTTP 403，Cloudflare 会话失效，请重新验证。");
+            }
+
             await WaitForPageContentAsync(relativeUrl, cancellationToken);
             var payload = await Browser.CoreWebView2.ExecuteScriptAsync(
                 "JSON.stringify({ status: document.documentElement ? 200 : 0, url: location.href, title: document.title, html: document.documentElement ? document.documentElement.outerHTML : '' })");

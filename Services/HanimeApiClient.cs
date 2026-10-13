@@ -213,10 +213,8 @@ public sealed partial class HanimeApiClient
     }
 
     /// <summary>
-    /// 直连 HTTP 抓取。Cloudflare 对新建连接的前 1-2 个请求必发托管挑战
-    /// （.NET 的 TLS 指纹与真实 Chromium 不同 + 代理出口被判定为机房），
-    /// 实测约 1.2-1.8 秒后同一连接即全部放行，因此这里按时间窗口重试；
-    /// 只有连续失败才进入冷却，避免一次瞬时挑战把后续请求全部退化成 WebView2 整页导航。
+    /// 直连 HTTP 抓取。网络或服务器瞬时错误按策略重试；403 或明确的 Cloudflare 挑战
+    /// 立即返回给调用方触发验证，避免在已确认会话失效后继续等待重试和整页导航。
     /// </summary>
     private async Task<BrowserFetchResult?> TryFetchViaHttpAsync(Uri targetUri, CancellationToken cancellationToken, int maxAttempts)
     {
@@ -252,11 +250,19 @@ public sealed partial class HanimeApiClient
                     Title = ExtractHtmlTitle(html)
                 };
 
-                if (response.IsSuccessStatusCode && !CloudflareDetection.IsChallengePage(html, result.Title))
+                // 已确认会话被拒绝时立即返回，让搜索的验证流程接手，避免重试和导航继续拖延。
+                if (result.Status == 403 || CloudflareDetection.IsChallengePage(html, result.Title))
+                {
+                    DisableDirectHttp();
+                    AppLogger.Info("cloudflare", $"直连请求遇到验证，立即交给会话恢复: {targetUri} status={result.Status}");
+                    return result;
+                }
+
+                if (response.IsSuccessStatusCode)
                 {
                     if (attempt > 1)
                     {
-                        AppLogger.Info("http", $"直连 HTTP 第 {attempt} 次尝试成功（前 {attempt - 1} 次被 Cloudflare 挑战）: {targetUri}");
+                        AppLogger.Info("http", $"直连 HTTP 第 {attempt} 次尝试成功（前 {attempt - 1} 次未成功）: {targetUri}");
                     }
 
                     Debug.WriteLine($"[html-http] {targetUri} status={(int)response.StatusCode} bytes={html.Length} attempt={attempt}");

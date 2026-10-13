@@ -257,6 +257,7 @@ public partial class MainWindow
         var operationId = CreateOperationId("cfrecover");
         if (_sessionRecoveryTask is not null)
         {
+            _cloudflareWindow?.ShowForManualVerification("检测到会话失效，请在此窗口完成 Cloudflare 验证。");
             LogInfoThrottled("cloudflare", $"[{operationId}] 复用进行中的会话恢复任务", TimeSpan.FromSeconds(5));
             return await _sessionRecoveryTask.WaitAsync(cancellationToken);
         }
@@ -280,9 +281,9 @@ public partial class MainWindow
     {
         cancellationToken.ThrowIfCancellationRequested();
         _cloudflareWindow ??= new CloudflareWindow(_settings.SiteHost) { Owner = this };
-        StatusText.Text = $"{reason} 正在后台自动恢复会话，无需手动操作。";
+        StatusText.Text = $"{reason} 请在弹出的窗口中完成验证。";
         LogInfo("cloudflare", $"[{operationId}] {reason}");
-        var verified = await _cloudflareWindow.VerifyAsync(forceRefresh: false, cancellationToken);
+        var verified = await _cloudflareWindow.VerifyAsync(forceRefresh: false, cancellationToken, showImmediately: true);
         cancellationToken.ThrowIfCancellationRequested();
         if (!verified || _cloudflareWindow.Cookies.Count == 0 || string.IsNullOrWhiteSpace(_cloudflareWindow.CookieHeader))
         {
