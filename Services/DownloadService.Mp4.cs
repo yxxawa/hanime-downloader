@@ -30,6 +30,10 @@ public sealed partial class DownloadService
             ? $"[attempt {attempt}] 下载: {uri} resume={requestedResume} existing={existingBytes}"
             : $"下载: {uri} resume={requestedResume} existing={existingBytes}");
 
+        if (attempt == 1)
+        {
+            ReportProgress(progress, speedWindow, existingBytes, null, startedAt);
+        }
         using var request = CreateRequest(HttpMethod.Get, uri, requestedResume ? existingBytes : null, null);
         using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
 
@@ -62,7 +66,7 @@ public sealed partial class DownloadService
                 restartResponse.EnsureSuccessStatusCode();
                 EnsureMediaResponse(restartResponse);
                 using var restarted = restartResponse;
-                await ReadMediaStreamAsync(restarted, tmpPath, fileMode, bytesReceived, speedWindow, startedAt, progress, cancellationToken);
+                await ReadMediaStreamAsync(restarted, tmpPath, fileMode, bytesReceived, speedWindow, startedAt, progress, cancellationToken, restarted.Content.Headers.ContentLength);
                 RejectReparsePoint(finalPath);
                 File.Move(tmpPath, finalPath, overwrite: true);
                 return;
@@ -145,7 +149,7 @@ public sealed partial class DownloadService
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
             var buffer = new byte[BufferSize];
             int bytesRead;
-            while ((bytesRead = await input.ReadAsync(buffer, cancellationToken)) > 0)
+            while ((bytesRead = await ReadWithIdleTimeoutAsync(input, buffer, cancellationToken)) > 0)
             {
                 await output.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
                 bytesReceived += bytesRead;
@@ -167,7 +171,7 @@ public sealed partial class DownloadService
             await output.FlushAsync(cancellationToken);
             if (totalBytes is long expectedLength && bytesReceived != expectedLength)
             {
-                throw new InvalidDataException($"下载长度校验失败：收到 {bytesReceived} 字节，预期 {expectedLength} 字节。");
+                throw new IOException($"下载流提前结束：收到 {bytesReceived} 字节，预期 {expectedLength} 字节。");
             }
 
             ReportProgress(progress, speedWindow, bytesReceived, totalBytes, startedAt);

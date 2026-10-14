@@ -175,15 +175,16 @@ public partial class MainWindow
             var lastQueueProgressText = string.Empty;
             var progress = new Progress<DownloadProgressInfo>(info =>
             {
-                var displaySpeed = info.InstantBytesPerSecond > 0 ? info.InstantBytesPerSecond : info.BytesPerSecond;
-                var speedText = displaySpeed > 0 ? $"{FormatBytes((long)displaySpeed)}/s" : string.Empty;
+                var displaySpeed = info.IsWaitingForData ? 0 : (info.InstantBytesPerSecond > 0 ? info.InstantBytesPerSecond : info.BytesPerSecond);
+                var speedText = displaySpeed > 0 ? $"{FormatBytes((long)displaySpeed)}/s" : "0 B/s";
                 var remainingText = info.EstimatedRemaining is TimeSpan remaining ? $"剩余 {FormatDuration(remaining)}" : string.Empty;
 
                 if (queueItem is not null)
                 {
+                    var stateText = info.StatusText ?? (info.IsWaitingForData ? "等待数据" : "下载中");
                     var queueStatusText = info.Percentage is double q
-                        ? $"下载中 {q:0.0}% {speedText} {remainingText}".Trim()
-                        : $"下载中 {FormatBytes(info.BytesReceived)} {speedText}".Trim();
+                        ? $"{stateText} {q:0.0}% {speedText} {remainingText}".Trim()
+                        : $"{stateText} {FormatBytes(info.BytesReceived)} {speedText}".Trim();
                     if (!string.Equals(queueItem.QueueStatusText, queueStatusText, StringComparison.Ordinal) &&
                         !string.Equals(lastQueueProgressText, queueStatusText, StringComparison.Ordinal))
                     {

@@ -187,7 +187,7 @@ public sealed partial class DownloadService
         {
             BytesReceived = bytesReceived,
             TotalBytes = totalBytes,
-            BytesPerSecond = bytesReceived / elapsedSeconds,
+            BytesPerSecond = speedWindow.TotalBytes / elapsedSeconds,
             InstantBytesPerSecond = speedWindow.BytesPerSecond
         });
     }

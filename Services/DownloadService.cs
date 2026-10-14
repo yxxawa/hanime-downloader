@@ -21,6 +21,7 @@ public sealed partial class DownloadService
     private readonly HttpClient _httpClient;
     private readonly Uri _referrer;
     private readonly DownloadRetryPolicy _retryPolicy;
+    private readonly TimeSpan _readIdleTimeout;
     private readonly ConcurrentDictionary<Uri, byte[]> _keyCache = new();
     /// <summary>HLS 分片并行下载并发数。</summary>
     private const int HlsSegmentConcurrency = 4;
@@ -28,7 +29,8 @@ public sealed partial class DownloadService
     public DownloadService(
         HttpClient httpClient,
         string siteHost = "hanime1.me",
-        DownloadRetryPolicy? retryPolicy = null)
+        DownloadRetryPolicy? retryPolicy = null,
+        TimeSpan? readIdleTimeout = null)
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         var normalizedHost = (siteHost ?? "hanime1.me").Trim().TrimStart('.').ToLowerInvariant();
@@ -39,6 +41,11 @@ public sealed partial class DownloadService
 
         _referrer = new Uri($"https://{normalizedHost}/");
         _retryPolicy = retryPolicy ?? new DownloadRetryPolicy();
+        _readIdleTimeout = readIdleTimeout ?? TimeSpan.FromSeconds(15);
+        if (_readIdleTimeout <= TimeSpan.Zero || _readIdleTimeout.TotalMilliseconds > uint.MaxValue - 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(readIdleTimeout));
+        }
     }
 
     public async Task<DownloadProbeResult> ProbeAsync(string url, CancellationToken cancellationToken = default)
@@ -46,19 +53,12 @@ public sealed partial class DownloadService
         var uri = ValidateHttpUrl(url);
         if (LooksLikePlaylistUrl(uri))
         {
-            using var playlistResponse = await SendWithRetryAsync(
-                () => CreateRequest(HttpMethod.Get, uri, null, null),
-                HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken);
-            playlistResponse.EnsureSuccessStatusCode();
-            EnsurePlaylistResponse(playlistResponse);
-            var playlistText = await playlistResponse.Content.ReadAsStringAsync(cancellationToken);
-            var parsedPlaylist = M3u8PlaylistParser.Parse(playlistText, uri);
+            var parsedPlaylist = await LoadPlaylistAsync(uri, cancellationToken);
             return new DownloadProbeResult
             {
-                ContentType = playlistResponse.Content.Headers.ContentType?.MediaType ?? "application/vnd.apple.mpegurl",
+                ContentType = "application/vnd.apple.mpegurl",
                 ContentLength = null,
-                IsPartial = playlistResponse.StatusCode == HttpStatusCode.PartialContent,
+                IsPartial = false,
                 Playlist = parsedPlaylist
             };
         }
@@ -103,6 +103,8 @@ public sealed partial class DownloadService
         RejectReparsePoint(finalPath);
         RejectReparsePoint(tmpPath);
 
+        await using var progressMonitor = new DownloadProgressMonitor(progress, cancellationToken);
+        progress = progressMonitor;
         var isPlaylist = LooksLikePlaylistUrl(uri) || IsPlaylistMediaType(mediaType);
         if (isPlaylist)
         {
@@ -113,6 +115,10 @@ public sealed partial class DownloadService
         await _retryPolicy.ExecuteAsync(
             async (attempt, token) =>
             {
+                if (attempt > 1)
+                {
+                    progressMonitor.ReportRetry(attempt, _retryPolicy.MaxAttempts);
+                }
                 await DownloadSingleAttemptAsync(uri, finalPath, tmpPath, progress, attempt, token);
                 return true;
             },
@@ -136,6 +142,7 @@ public sealed partial class DownloadService
         private readonly object _sync = new();
         private double _smoothedBytesPerSecond;
         private long _lastSampleTick;
+        private long _totalBytes;
 
         public void Add(int bytes)
         {
@@ -147,6 +154,7 @@ public sealed partial class DownloadService
             lock (_sync)
             {
                 var now = Environment.TickCount64;
+                _totalBytes += bytes;
                 _samples.Enqueue((now, bytes));
                 while (_samples.Count > 0 && now - _samples.Peek().Tick > WindowMs)
                 {
@@ -184,6 +192,11 @@ public sealed partial class DownloadService
 
                 _lastSampleTick = now;
             }
+        }
+
+        public long TotalBytes
+        {
+            get { lock (_sync) { return _totalBytes; } }
         }
 
         public double BytesPerSecond

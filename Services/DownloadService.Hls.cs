@@ -54,6 +54,23 @@ public sealed partial class DownloadService
         var startedAt = DateTime.UtcNow;
         var speedWindow = new SpeedWindow();
         var completed = false;
+        var transferredBytes = 0L;
+        var lastProgressTick = 0L;
+        var progressSync = new object();
+        void OnBytesRead(int count)
+        {
+            lock (progressSync)
+            {
+                transferredBytes += count;
+                speedWindow.Add(count);
+                var now = Environment.TickCount64;
+                if (lastProgressTick == 0 || now - lastProgressTick >= 150)
+                {
+                    ReportProgress(progress, speedWindow, transferredBytes, null, startedAt);
+                    lastProgressTick = now;
+                }
+            }
+        }
 
         try
         {
@@ -67,13 +84,18 @@ public sealed partial class DownloadService
                     playlist.InitSegment.ByteRange,
                     playlist.InitSegment.Key,
                     playlist.MediaSequence,
-                    cancellationToken);
+                    cancellationToken,
+                    OnBytesRead);
+                totalBytes = initBytes.LongLength;
             }
 
             // 分片并行下载，完成后按顺序合并到输出文件。
             var segmentPaths = new string[playlist.Segments.Count];
             var parallelism = Math.Clamp(HlsSegmentConcurrency, 1, 8);
             AppLogger.Info("hls", $"HLS 分片下载: segments={segmentPaths.Length}, concurrency={parallelism}");
+            using var segmentCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var segmentToken = segmentCancellation.Token;
+            Exception? segmentFailure = null;
             using (var gate = new SemaphoreSlim(parallelism, parallelism))
             {
                 var downloadTasks = new Task[segmentPaths.Length];
@@ -85,7 +107,7 @@ public sealed partial class DownloadService
                     segmentPaths[segmentIndex] = segmentPath;
                     downloadTasks[segmentIndex] = Task.Run(async () =>
                     {
-                        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                        await gate.WaitAsync(segmentToken).ConfigureAwait(false);
                         try
                         {
                             var bytes = await GetOrDownloadSegmentAsync(
@@ -94,19 +116,33 @@ public sealed partial class DownloadService
                                 segment.ByteRange,
                                 segment.Key,
                                 segment.Sequence,
-                                cancellationToken).ConfigureAwait(false);
-                            var received = Interlocked.Add(ref totalBytes, bytes.LongLength);
-                            speedWindow.Add(bytes.Length);
-                            ReportProgress(progress, speedWindow, received, null, startedAt);
+                                segmentToken,
+                                OnBytesRead).ConfigureAwait(false);
+                            Interlocked.Add(ref totalBytes, bytes.LongLength);
+                        }
+                        catch (Exception ex)
+                        {
+                            Interlocked.CompareExchange(ref segmentFailure, ex, null);
+                            segmentCancellation.Cancel();
+                            throw;
                         }
                         finally
                         {
                             gate.Release();
                         }
-                    }, cancellationToken);
+                    }, segmentToken);
                 }
 
-                await Task.WhenAll(downloadTasks);
+                try
+                {
+                    await Task.WhenAll(downloadTasks);
+                }
+                catch when (segmentFailure is not null)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(segmentFailure).Throw();
+                    throw;
+                }
             }
 
             await using (var output = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None, BufferSize, useAsync: true))
@@ -150,13 +186,11 @@ public sealed partial class DownloadService
 
     private async Task<M3u8Playlist> LoadPlaylistAsync(Uri playlistUri, CancellationToken cancellationToken)
     {
-        using var response = await SendWithRetryAsync(
+        var bytes = await ReadResponseWithRetryAsync(
             () => CreateRequest(HttpMethod.Get, playlistUri, null, null),
-            HttpCompletionOption.ResponseHeadersRead,
+            EnsurePlaylistResponse,
             cancellationToken);
-        response.EnsureSuccessStatusCode();
-        EnsurePlaylistResponse(response);
-        var content = await response.Content.ReadAsStringAsync(cancellationToken);
+        var content = Encoding.UTF8.GetString(bytes).TrimStart('﻿');
         return M3u8PlaylistParser.Parse(content, playlistUri);
     }
 
@@ -166,18 +200,20 @@ public sealed partial class DownloadService
         M3u8ByteRange? byteRange,
         M3u8Key? key,
         long sequence,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<int>? onBytesRead = null)
     {
         if (File.Exists(segmentPath))
         {
             var existing = await File.ReadAllBytesAsync(segmentPath, cancellationToken);
             if (existing.Length > 0)
             {
+                onBytesRead?.Invoke(existing.Length);
                 return existing;
             }
         }
 
-        var bytes = await DownloadSegmentBytesAsync(segmentUri, byteRange, cancellationToken);
+        var bytes = await DownloadSegmentBytesAsync(segmentUri, byteRange, cancellationToken, onBytesRead);
         if (key is not null)
         {
             bytes = await DecryptSegmentAsync(bytes, key, sequence, cancellationToken);
@@ -192,53 +228,53 @@ public sealed partial class DownloadService
     private async Task<byte[]> DownloadSegmentBytesAsync(
         Uri segmentUri,
         M3u8ByteRange? byteRange,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<int>? onBytesRead = null)
     {
         var validatedSegmentUri = ValidateHttpUrl(segmentUri.AbsoluteUri);
-        using var response = await SendWithRetryAsync(
-            () => CreateRequest(
-                HttpMethod.Get,
-                validatedSegmentUri,
+        return await _retryPolicy.ExecuteAsync(async (_, token) =>
+        {
+            using var request = CreateRequest(HttpMethod.Get, validatedSegmentUri,
                 byteRange is null ? null : byteRange.Offset ?? 0,
-                byteRange is null ? null : (byteRange.Offset ?? 0) + byteRange.Length - 1),
-            HttpCompletionOption.ResponseHeadersRead,
-            cancellationToken);
-        response.EnsureSuccessStatusCode();
-        EnsureMediaResponse(response);
+                byteRange is null ? null : (byteRange.Offset ?? 0) + byteRange.Length - 1);
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
+            response.EnsureSuccessStatusCode();
+            EnsureMediaResponse(response);
 
-        if (byteRange is not null && response.StatusCode == HttpStatusCode.PartialContent)
-        {
-            var contentRange = response.Content.Headers.ContentRange;
-            var expectedStart = byteRange.Offset ?? 0;
-            if (contentRange?.From != expectedStart || contentRange.To is null || contentRange.To - expectedStart + 1 != byteRange.Length)
+            if (byteRange is not null && response.StatusCode == HttpStatusCode.PartialContent)
             {
-                throw new InvalidDataException($"HLS 分片 Content-Range 校验失败: {segmentUri}");
+                var contentRange = response.Content.Headers.ContentRange;
+                var expectedStart = byteRange.Offset ?? 0;
+                if (contentRange?.From != expectedStart || contentRange.To is null || contentRange.To - expectedStart + 1 != byteRange.Length)
+                {
+                    throw new InvalidDataException($"HLS 分片 Content-Range 校验失败: {segmentUri}");
+                }
             }
-        }
 
-        var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
-        if (byteRange is null)
-        {
-            return bytes;
-        }
-
-        if (response.StatusCode == HttpStatusCode.PartialContent)
-        {
-            if (bytes.LongLength != byteRange.Length)
+            var bytes = await ReadBufferedResponseAsync(response, token, onBytesRead);
+            if (byteRange is null)
             {
-                throw new InvalidDataException($"HLS 分片响应长度与 BYTERANGE 不匹配: {segmentUri}");
+                return bytes;
             }
-            return bytes;
-        }
 
-        // 部分 CDN 忽略 Range 返回完整资源：仅在完整响应包含所需区间时切片。
-        var offset = byteRange.Offset ?? 0;
-        if (offset < 0 || byteRange.Length > int.MaxValue || offset + byteRange.Length > bytes.LongLength)
-        {
-            throw new InvalidDataException($"HLS 分片没有返回所需的 BYTERANGE: {segmentUri}");
-        }
+            if (response.StatusCode == HttpStatusCode.PartialContent)
+            {
+                if (bytes.LongLength != byteRange.Length)
+                {
+                    throw new IOException($"HLS 分片响应提前结束: {segmentUri}");
+                }
+                return bytes;
+            }
 
-        return bytes.AsSpan((int)offset, (int)byteRange.Length).ToArray();
+            // 部分 CDN 忽略 Range 返回完整资源：仅在完整响应包含所需区间时切片。
+            var offset = byteRange.Offset ?? 0;
+            if (offset < 0 || byteRange.Length > int.MaxValue || offset + byteRange.Length > bytes.LongLength)
+            {
+                throw new InvalidDataException($"HLS 分片没有返回所需的 BYTERANGE: {segmentUri}");
+            }
+
+            return bytes.AsSpan((int)offset, (int)byteRange.Length).ToArray();
+        }, cancellationToken);
     }
 
     private async Task<byte[]> DecryptSegmentAsync(
@@ -281,12 +317,10 @@ public sealed partial class DownloadService
     private async Task<byte[]> DownloadKeyBytesAsync(Uri keyUri, CancellationToken cancellationToken)
     {
         var validatedKeyUri = ValidateHttpUrl(keyUri.AbsoluteUri);
-        using var response = await SendWithRetryAsync(
+        return await ReadResponseWithRetryAsync(
             () => CreateRequest(HttpMethod.Get, validatedKeyUri, null, null),
-            HttpCompletionOption.ResponseContentRead,
+            _ => { },
             cancellationToken);
-        response.EnsureSuccessStatusCode();
-        return await response.Content.ReadAsByteArrayAsync(cancellationToken);
     }
 
     private static string CreatePlaylistFingerprint(Uri playlistUri, M3u8Playlist playlist)
