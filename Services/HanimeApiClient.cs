@@ -16,8 +16,9 @@ public sealed partial class HanimeApiClient
     private static readonly TimeSpan DetailsCacheDuration = TimeSpan.FromMinutes(5);
     private readonly CloudflareWindow _browserWindow;
     private readonly HttpClient? _httpClient;
-    private readonly string _siteBase;
-    private readonly Uri _siteBaseUri;
+    // Follow the verified browser origin, not the configured profile's original host.
+    private string _siteBase => _siteBaseUri.GetLeftPart(UriPartial.Authority);
+    private Uri _siteBaseUri => _browserWindow.SessionBaseUri;
     private readonly ConcurrentDictionary<string, HtmlCacheEntry> _htmlCache = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>HTML 缓存条数上限：每条是整页 HTML（100-400KB），必须限制，否则长时间浏览会持续吃内存。</summary>
     private const int HtmlCacheMaxEntries = 200;
@@ -38,8 +39,7 @@ public sealed partial class HanimeApiClient
     {
         _browserWindow = browserWindow;
         _httpClient = httpClient;
-        _siteBase = $"https://{siteHost}";
-        _siteBaseUri = new Uri($"{_siteBase}/");
+        // Keep the siteHost parameter for compatibility; the browser owns the session origin.
     }
 
     public async Task<SearchPageResult> SearchAsync(string keyword, int page = 1, SearchFilterOptions? filters = null, CancellationToken cancellationToken = default)
@@ -161,7 +161,7 @@ public sealed partial class HanimeApiClient
             var inPage = await _browserWindow.TryFetchHtmlInPageAsync(relativeUrl, cancellationToken);
             if (inPage is not null)
             {
-                AppLogger.InfoThrottled("http", $"页内 fetch 成功: {relativeUrl} status={inPage.Status} bytes={inPage.Html.Length} ms={pageFetchWatch.ElapsedMilliseconds}", TimeSpan.FromSeconds(3));
+                AppLogger.InfoThrottled("http", $"页内 fetch 收到响应: {relativeUrl} status={inPage.Status} blocked={inPage.Status == 403 || CloudflareDetection.IsChallengePage(inPage.Html, inPage.Title)} bytes={inPage.Html.Length} ms={pageFetchWatch.ElapsedMilliseconds}", TimeSpan.FromSeconds(3));
                 Debug.WriteLine($"[html-pagefetch] {targetUri} status={inPage.Status} bytes={inPage.Html.Length} ms={pageFetchWatch.ElapsedMilliseconds}");
                 return inPage;
             }
@@ -180,7 +180,7 @@ public sealed partial class HanimeApiClient
             var direct = await TryFetchViaHttpAsync(targetUri, cancellationToken, DirectHttpMaxAttempts);
             if (direct is not null)
             {
-                AppLogger.InfoThrottled("http", $"直连 HTTP 成功: {relativeUrl}", TimeSpan.FromSeconds(3));
+                AppLogger.InfoThrottled("http", $"直连 HTTP 收到响应: {relativeUrl} status={direct.Status} blocked={direct.Status == 403 || CloudflareDetection.IsChallengePage(direct.Html, direct.Title)}", TimeSpan.FromSeconds(3));
                 return direct;
             }
         }
@@ -194,7 +194,7 @@ public sealed partial class HanimeApiClient
                 var recovered = await _browserWindow.TryFetchHtmlInPageAsync(relativeUrl, cancellationToken);
                 if (recovered is not null)
                 {
-                    AppLogger.InfoThrottled("http", $"恢复页面上下文后页内 fetch 成功: {relativeUrl}", TimeSpan.FromSeconds(3));
+                    AppLogger.InfoThrottled("http", $"恢复页面上下文后页内 fetch 收到响应: {relativeUrl} status={recovered.Status} blocked={recovered.Status == 403 || CloudflareDetection.IsChallengePage(recovered.Html, recovered.Title)}", TimeSpan.FromSeconds(3));
                     return recovered;
                 }
             }
@@ -389,12 +389,12 @@ public sealed partial class HanimeApiClient
             var snippet = CloudflareDetection.BuildContextSnippet(response.Html, marker);
             Debug.WriteLine($"[cf-block] marker={marker} url={response.Url} context={snippet}");
             AppLogger.Info("cloudflare", $"检测到挑战页: marker={marker}, url={response.Url}, context={snippet}");
-            throw new InvalidOperationException($"请求被 Cloudflare 挑战页拦截（标记: {marker}），请重新验证。页面仍是 Cloudflare 验证页。");
+            throw new CloudflareChallengeException($"请求被 Cloudflare 挑战页拦截（标记: {marker}），请重新验证。页面仍是 Cloudflare 验证页。", response.Url);
         }
 
         if (response.Status == 403)
         {
-            throw new InvalidOperationException("站点返回 403（疑似 Cloudflare 拦截），当前浏览器会话未被接受。请在验证窗口中先确认主页已正常打开。");
+            throw new CloudflareChallengeException("站点返回 403（疑似 Cloudflare 拦截），当前浏览器会话未被接受。请在验证窗口中先确认主页已正常打开。", response.Url);
         }
     }
 }

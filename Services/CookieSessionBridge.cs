@@ -4,18 +4,25 @@ using Microsoft.Web.WebView2.Core;
 
 namespace Hanime1Downloader.CSharp.Services;
 
-public sealed class CookieSessionBridge(string siteHost = "hanime1.me")
+public sealed class CookieSessionBridge
 {
-    private readonly string _defaultDomain = $".{siteHost}";
+    private readonly SiteSessionContext _session;
+    private readonly string _defaultDomain;
+
+    public CookieSessionBridge(string siteHost = "hanime1.me") : this(new SiteSessionContext(siteHost)) { }
+
+    public CookieSessionBridge(SiteSessionContext session)
+    {
+        _session = session;
+        _defaultDomain = $".{session.BaseUri.Host}";
+    }
 
     public async Task<IReadOnlyList<BrowserCookieRecord>> ExportCookiesAsync(CoreWebView2CookieManager cookieManager)
     {
         var cookies = await cookieManager.GetCookiesAsync(string.Empty);
         return cookies
-            // 只导出本站域名的 Cookie，避免第三方 Cookie 被持久化到磁盘（隐私泄漏）。
-            .Where(cookie => string.IsNullOrWhiteSpace(cookie.Domain) ||
-                             cookie.Domain.Equals(siteHost, StringComparison.OrdinalIgnoreCase) ||
-                             cookie.Domain.EndsWith("." + siteHost, StringComparison.OrdinalIgnoreCase))
+            // 保留已知站点别名的 Cookie 原始域，仍排除第三方 Cookie。
+            .Where(cookie => _session.IsTrustedCookieDomain(cookie.Domain))
             .Select(cookie => new BrowserCookieRecord
             {
                 Name = cookie.Name,
@@ -33,7 +40,17 @@ public sealed class CookieSessionBridge(string siteHost = "hanime1.me")
 
     public string BuildCookieHeader(IEnumerable<BrowserCookieRecord> cookies)
     {
-        return string.Join("; ", cookies.Select(cookie => $"{cookie.Name}={cookie.Value}"));
+        // A raw Cookie header has no domain metadata: scope it to the actual request origin.
+        return CreateCookieContainer(cookies).GetCookieHeader(_session.BaseUri);
+    }
+
+    public bool HasValidClearance(IEnumerable<BrowserCookieRecord> cookies)
+    {
+        var minimumExpiry = DateTime.UtcNow.AddSeconds(30);
+        return CreateCookieContainer(cookies).GetCookies(_session.BaseUri).Cast<Cookie>().Any(cookie =>
+            cookie.Name.Equals("cf_clearance", StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(cookie.Value) &&
+            (cookie.Expires == DateTime.MinValue || cookie.Expires.ToUniversalTime() > minimumExpiry));
     }
 
     public CookieContainer CreateCookieContainer(IEnumerable<BrowserCookieRecord> cookies)
@@ -41,7 +58,8 @@ public sealed class CookieSessionBridge(string siteHost = "hanime1.me")
         var container = new CookieContainer();
         foreach (var record in cookies)
         {
-            if (string.IsNullOrWhiteSpace(record.Name) || string.IsNullOrWhiteSpace(record.Value))
+            if (!_session.IsTrustedCookieDomain(record.Domain) ||
+                string.IsNullOrWhiteSpace(record.Name) || string.IsNullOrWhiteSpace(record.Value))
             {
                 continue;
             }
@@ -53,6 +71,10 @@ public sealed class CookieSessionBridge(string siteHost = "hanime1.me")
                     Secure = record.IsSecure,
                     HttpOnly = record.IsHttpOnly
                 };
+                if (record.Expires is > 0 and <= 253402300799)
+                {
+                    cookie.Expires = DateTimeOffset.FromUnixTimeSeconds((long)record.Expires.Value).UtcDateTime;
+                }
                 container.Add(cookie);
             }
             catch (CookieException ex)

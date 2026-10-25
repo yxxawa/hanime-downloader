@@ -868,7 +868,7 @@ public partial class MainWindow
                 {
                     SetQueueItemVisualState(item, DownloadQueueState.Verifying, "重验", "等待重验", showProgress: true, isProgressIndeterminate: true);
                     UpdateQueueRuntimeSummaryUi();
-                    var verified = await EnsureVerifiedSessionAsync("下载前遇到 Cloudflare 验证，正在打开验证窗口...", queueCancellationToken);
+                    var verified = await EnsureVerifiedSessionAsync("下载前遇到 Cloudflare 验证，正在打开验证窗口...", queueCancellationToken, RecoveryRequestUrl(ex));
                     if (!verified)
                     {
                         SetQueueItemVisualState(item, DownloadQueueState.Error, "失败", "验证失败");

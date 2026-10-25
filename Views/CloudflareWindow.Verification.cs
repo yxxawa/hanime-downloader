@@ -13,83 +13,69 @@ namespace Hanime1Downloader.CSharp.Views;
 public partial class CloudflareWindow
 {
 
-    /// <summary>
-    /// 获取/恢复 Cloudflare 会话。自动恢复先静默验证，手动验证立即显示窗口并由用户确认完成。
-    /// </summary>
-    public async Task<bool> VerifyAsync(bool forceRefresh = false, CancellationToken cancellationToken = default, bool showImmediately = false)
+    /// <summary>Show verification when needed, then continue automatically only after the failed requests recover.</summary>
+    public async Task<bool> VerifyAsync(bool forceRefresh = false, CancellationToken cancellationToken = default,
+        bool showImmediately = false, Func<CancellationToken, Task<bool>>? confirmRecoveryAsync = null, Func<bool>? isRecoveryConfirmed = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        _verificationCancellation?.Cancel();
         _verificationCompletionSource?.TrySetResult(false);
         var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _verificationCompletionSource = completion;
-        _autoCompleteWhenReady = !showImmediately;
-        if (showImmediately)
+        using var verificationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _verificationCancellation = verificationCancellation;
+        var token = verificationCancellation.Token;
+        _confirmRecoveryAsync = confirmRecoveryAsync ?? (ct => ProbeVerificationRequestAsync(null, ct));
+        _isRecoveryConfirmed = isRecoveryConfirmed ?? (() => true);
+        _nextRecoveryCheckAt = DateTime.MinValue;
+        _autoCompleteWhenReady = true;
+        using var registration = token.Register(() => Dispatcher.BeginInvoke(new Action(() =>
         {
-            ShowForManualVerification("正在初始化内置浏览器，请在此窗口完成 Cloudflare 验证。");
-        }
-
-        await EnsureInitializedAsync();
-        cancellationToken.ThrowIfCancellationRequested();
-        if (completion.Task.IsCompleted)
-        {
-            return await completion.Task;
-        }
-
-        // 用户取消（暂停等场景）时停止等待验证，不再无限挂起。
-        using var cancellationRegistration = cancellationToken.Register(() =>
-        {
+            if (!ReferenceEquals(_verificationCompletionSource, completion) || completion.Task.IsCompleted) return;
             _pollTimer.Stop();
+            _autoCompleteWhenReady = false;
             completion.TrySetResult(false);
-        });
-
-        if (Browser.CoreWebView2 is null)
+            Hide();
+        })));
+        try
         {
-            completion.TrySetResult(false);
-            return await completion.Task;
-        }
-
-        if (forceRefresh)
-        {
-            await ClearHanimeCookiesAsync();
-        }
-        else
-        {
+            if (showImmediately) ShowForManualVerification("请完成 Cloudflare 验证，通过后将检查原请求并自动继续。");
+            await EnsureInitializedAsync();
+            token.ThrowIfCancellationRequested();
+            if (completion.Task.IsCompleted) return await completion.Task;
+            if (Browser.CoreWebView2 is null) { completion.TrySetResult(false); return false; }
+            if (forceRefresh) await ClearHanimeCookiesAsync();
             FinishButton.IsEnabled = false;
-            StatusText.Text = !_autoCompleteWhenReady
-                ? "请在此窗口完成 Cloudflare 验证，然后点击“验证完成并继续”。"
-                : "正在后台获取 Cloudflare 会话，无需手动操作...";
-        }
-
-        Browser.CoreWebView2.Navigate(_siteBaseUrl);
-        _pollTimer.Start();
-
-        if (!_autoCompleteWhenReady)
-        {
+            StatusText.Text = showImmediately
+                ? "请完成页面验证；原请求恢复后，本窗口会自动收起。"
+                : "正在后台恢复会话并检查请求...";
+            _navigationPending = true;
+            Browser.CoreWebView2.Navigate(_siteBaseUrl);
+            _pollTimer.Start();
+            if (!showImmediately)
+            {
+                var deadline = DateTime.UtcNow + HiddenChallengeGrace;
+                while (!IsVisible && !completion.Task.IsCompleted && DateTime.UtcNow < deadline)
+                    await Task.Delay(ClearancePollInterval, token);
+                if (!IsVisible && !completion.Task.IsCompleted)
+                {
+                    ShowVerificationWindow("请在此窗口完成验证，原请求恢复后将自动继续。");
+                    Browser.CoreWebView2?.Reload();
+                }
+            }
             return await completion.Task;
         }
-
-        // 后台静默等待：窗口保持隐藏，托管挑战由挑战脚本自动完成。
-        var hiddenDeadline = DateTime.UtcNow + HiddenChallengeGrace;
-        while (_autoCompleteWhenReady && !completion.Task.IsCompleted && DateTime.UtcNow < hiddenDeadline)
+        finally
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            await Task.Delay(ClearancePollInterval, cancellationToken);
-        }
-
-        if (_autoCompleteWhenReady && !completion.Task.IsCompleted && !cancellationToken.IsCancellationRequested)
-        {
-            AppLogger.Info("cloudflare", $"后台自动验证超过 {HiddenChallengeGrace.TotalSeconds:0} 秒仍未完成，显示验证窗口兜底");
-            await Dispatcher.InvokeAsync(() =>
+            if (ReferenceEquals(_verificationCompletionSource, completion))
             {
-                ShowVerificationWindow("自动验证未完成，请在此窗口完成 Cloudflare 验证。");
-                if (Browser.CoreWebView2 is not null)
-                {
-                    Browser.CoreWebView2.Reload();
-                }
-            });
+                _pollTimer.Stop();
+                _autoCompleteWhenReady = false;
+                _confirmRecoveryAsync = null;
+                _isRecoveryConfirmed = null;
+                _verificationCancellation = null;
+            }
         }
-
-        return await completion.Task;
     }
 
     private async Task WaitForPageContentAsync(string relativeUrl, CancellationToken cancellationToken)
@@ -131,7 +117,7 @@ public partial class CloudflareWindow
                 // 搜索已确认遇到挑战：立即交给会话恢复流程显示窗口，不等待后台挑战宽限期。
                 if (isSearchPage)
                 {
-                    throw new InvalidOperationException("搜索遇到 Cloudflare 验证，当前会话失效，请重新验证。");
+                    throw new CloudflareChallengeException("搜索遇到 Cloudflare 验证，当前会话失效，请重新验证。", new Uri(SessionBaseUri, relativeUrl).AbsoluteUri);
                 }
 
                 if (!string.Equals(state.Visibility, lastVisibility, StringComparison.OrdinalIgnoreCase))
@@ -223,6 +209,7 @@ public partial class CloudflareWindow
 
     private async void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
+        if (e.NavigationId == _navigationId) _navigationPending = false;
         if (!e.IsSuccess || Browser.CoreWebView2 is null)
         {
             return;
@@ -230,6 +217,8 @@ public partial class CloudflareWindow
 
         try
         {
+            // Also track redirects while hidden; the configured profile stays unchanged.
+            IsCurrentPageOnSite();
             await CheckVerificationStateAsync();
         }
         catch (Exception ex)
@@ -240,48 +229,77 @@ public partial class CloudflareWindow
 
     private async Task CheckVerificationStateAsync()
     {
-        if (Browser.CoreWebView2 is null || _isCheckingState) return;
-        if (!IsVisible && !_autoCompleteWhenReady) return;
+        var completion = _verificationCompletionSource;
+        var cancellation = _verificationCancellation;
+        var confirm = _confirmRecoveryAsync;
+        if (Browser.CoreWebView2 is null || _isCheckingState || !_autoCompleteWhenReady || completion is null || completion.Task.IsCompleted ||
+            cancellation is null || cancellation.IsCancellationRequested || confirm is null) return;
+        var token = cancellation.Token;
         _isCheckingState = true;
         try
         {
-        var payload = await Browser.CoreWebView2.ExecuteScriptAsync(
-            "JSON.stringify({ html: document.documentElement?.outerHTML ?? '', title: document.title, ready: document.readyState, href: location.href, bodyText: document.body?.innerText ?? '' })");
-        var state = DeserializeScriptResult<PageState>(payload) ?? new PageState();
-        var html = state.Html ?? string.Empty;
-
-        var challengePresent = CloudflareDetection.IsChallengePage(html, state.Title);
-        if (challengePresent)
-        {
-            StatusText.Text = $"{_siteHost} 正在进行 Cloudflare 验证，请保持此窗口打开并等待页面自动跳转。";
+            FinishButton.IsEnabled = false;
+            var payload = await Browser.CoreWebView2.ExecuteScriptAsync(
+                "JSON.stringify({ html: document.documentElement?.outerHTML ?? '', title: document.title, ready: document.readyState, href: location.href })");
+            var state = DeserializeScriptResult<PageState>(payload) ?? new PageState();
+            if (CloudflareDetection.IsChallengePage(state.Html ?? string.Empty, state.Title))
+            {
+                StatusText.Text = "Cloudflare 验证尚未通过，请完成页面中的验证。";
+                return;
+            }
+            if (_navigationPending || state.Ready is not ("interactive" or "complete") || !IsCurrentPageOnSite() ||
+                !Uri.TryCreate(state.Href, UriKind.Absolute, out var pageUri) ||
+                pageUri.GetLeftPart(UriPartial.Authority) != SessionBaseUri.GetLeftPart(UriPartial.Authority)) return;
+            Cookies = await _cookieBridge.ExportCookiesAsync(Browser.CoreWebView2.CookieManager);
+            CookieHeader = _cookieBridge.BuildCookieHeader(Cookies);
+            if (!HasValidClearance())
+            {
+                StatusText.Text = "正在等待当前站点的有效验证 Cookie...";
+                return;
+            }
             FinishButton.IsEnabled = true;
-            return;
+            if (DateTime.UtcNow < _nextRecoveryCheckAt) return;
+            _nextRecoveryCheckAt = DateTime.UtcNow + RecoveryCheckInterval;
+            FinishButton.IsEnabled = false;
+            StatusText.Text = "验证页面已通过，正在确认原请求恢复...";
+            var recovered = await confirm(token);
+            if (!ReferenceEquals(completion, _verificationCompletionSource) || completion.Task.IsCompleted || token.IsCancellationRequested) return;
+            if (!recovered)
+            {
+                StatusText.Text = "原请求仍未恢复，暂不关闭窗口；稍后自动检查，也可点击“重新检查”。";
+                return;
+            }
+            // Probing may rotate cookies. Persist the post-probe session, not an earlier snapshot.
+            Cookies = await _cookieBridge.ExportCookiesAsync(Browser.CoreWebView2.CookieManager);
+            CookieHeader = _cookieBridge.BuildCookieHeader(Cookies);
+            if (ReferenceEquals(completion, _verificationCompletionSource) && !completion.Task.IsCompleted &&
+                !token.IsCancellationRequested && !_navigationPending && HasValidClearance() && _isRecoveryConfirmed?.Invoke() == true) CompleteVerification();
         }
-
-        Cookies = await _cookieBridge.ExportCookiesAsync(Browser.CoreWebView2.CookieManager);
-        CookieHeader = _cookieBridge.BuildCookieHeader(Cookies);
-        var hasClearance = Cookies.Any(cookie => cookie.Name.Equals("cf_clearance", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(cookie.Value));
-
-        FinishButton.IsEnabled = true;
-        StatusText.Text = hasClearance ? ((_autoCompleteWhenReady ? $"{_siteHost} 已拿到 cf_clearance，正在自动继续。" : $"{_siteHost} 已拿到 cf_clearance，可以继续使用。")) : $"已进入 {_siteHost} 站点主页，可点击按钮手动获取 Cookie。";
-        if (_autoCompleteWhenReady && hasClearance)
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex)
         {
-            CompleteVerification();
+            if (ReferenceEquals(completion, _verificationCompletionSource) && !completion.Task.IsCompleted)
+            {
+                StatusText.Text = "原请求检查暂未成功，将自动重试；验证窗口保持打开。";
+                AppLogger.Info("cloudflare", $"恢复检查失败: {ex.GetType().Name}");
+            }
         }
+        finally
+        {
+            _isCheckingState = false;
+            if (ReferenceEquals(completion, _verificationCompletionSource) && !completion.Task.IsCompleted && !token.IsCancellationRequested)
+                FinishButton.IsEnabled = true;
         }
-        finally { _isCheckingState = false; }
     }
 
     private async void FinishButton_OnClick(object sender, RoutedEventArgs e)
     {
-        if (Browser.CoreWebView2 is null) return;
-        Cookies = await _cookieBridge.ExportCookiesAsync(Browser.CoreWebView2.CookieManager);
-        CookieHeader = _cookieBridge.BuildCookieHeader(Cookies);
-        _autoCompleteWhenReady = false;
-        CompleteVerification();
+        // A manual check follows exactly the same gate; it cannot force an unverified success.
+        _nextRecoveryCheckAt = DateTime.MinValue;
+        await CheckVerificationStateAsync();
     }
 
-    /// <summary>将正在进行的恢复切换为手动验证，立即显示同一个窗口。</summary>
+    /// <summary>显示同一个验证窗口，但不关闭验证后的自动检查与继续。</summary>
     public void ShowForManualVerification(string status)
     {
         if (_verificationCompletionSource is null || _verificationCompletionSource.Task.IsCompleted)
@@ -289,7 +307,6 @@ public partial class CloudflareWindow
             return;
         }
 
-        _autoCompleteWhenReady = false;
         ShowVerificationWindow(status);
     }
 

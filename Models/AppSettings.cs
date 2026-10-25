@@ -20,7 +20,7 @@ public sealed class AppSettings
     public string AccountUserId { get; set; } = string.Empty;
     public string AccountUserName { get; set; } = string.Empty;
     public string DefaultQuality { get; set; } = "highest";
-    public string SiteHost { get; set; } = "hanime1.com";
+    public string SiteHost { get; set; } = "hanime1.me";
     public List<string> CustomSiteHosts { get; set; } = [];
     public bool PersistDownloadQueue { get; set; } = true;
     public string ThemeMode { get; set; } = "light";

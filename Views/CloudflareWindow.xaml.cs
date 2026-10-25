@@ -37,7 +37,12 @@ public partial class CloudflareWindow : Window
     private readonly DispatcherTimer _pollTimer = new() { Interval = TimeSpan.FromSeconds(1.5) };
     private readonly CookieSessionBridge _cookieBridge;
     private readonly string _siteHost;
-    private readonly string _siteBaseUrl;
+    private readonly SiteSessionContext _sessionContext;
+    private string _siteBaseUrl => SessionBaseUri.AbsoluteUri;
+    private bool _navigationPending;
+    private ulong _navigationId;
+
+    public Uri SessionBaseUri => _sessionContext.BaseUri;
     private readonly SemaphoreSlim _fetchLock = new(1, 1);
     /// <summary>页内 fetch 的 postMessage 回传等待器（key = slot），避免整页 HTML 走 ExecuteScriptAsync 二次编码。</summary>
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ScriptFetchPayload>> _scriptFetchWaiters = new(StringComparer.Ordinal);
@@ -53,8 +58,8 @@ public partial class CloudflareWindow : Window
     public CloudflareWindow(string siteHost = "hanime1.me")
     {
         _siteHost = siteHost;
-        _siteBaseUrl = $"https://{siteHost}/";
-        _cookieBridge = new CookieSessionBridge(siteHost);
+        _sessionContext = new SiteSessionContext(siteHost);
+        _cookieBridge = new CookieSessionBridge(_sessionContext);
         InitializeComponent();
         StatusText.Text = $"请在内置浏览器中完成 {siteHost} 的 Cloudflare 验证。";
         Loaded += OnLoaded;
@@ -201,6 +206,11 @@ public partial class CloudflareWindow : Window
         Browser.CoreWebView2.Settings.IsSwipeNavigationEnabled = true;
         BrowserVersion = Browser.CoreWebView2.Environment.BrowserVersionString;
         Browser.CoreWebView2.Settings.UserAgent = BrowserIdentity.BuildUserAgent(BrowserVersion);
+        Browser.CoreWebView2.NavigationStarting += (_, args) =>
+        {
+            _navigationPending = true;
+            _navigationId = args.NavigationId;
+        };
         Browser.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
         Browser.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
         _initialized = true;
@@ -212,7 +222,10 @@ public partial class CloudflareWindow : Window
         if (_verificationCompletionSource is not null && !_verificationCompletionSource.Task.IsCompleted)
         {
             e.Cancel = true;
+            _pollTimer.Stop();
+            _autoCompleteWhenReady = false;
             _verificationCompletionSource.TrySetResult(false);
+            _verificationCancellation?.Cancel();
             Hide();
             return;
         }

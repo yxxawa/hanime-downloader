@@ -263,7 +263,7 @@ public partial class MainWindow
                 _queueRunCurrentProgress = 0;
                 UpdateQueueRuntimeSummaryUi();
             }
-            var restored = await EnsureVerifiedSessionAsync("下载过程中检测到 Cloudflare 会话失效，正在自动恢复...", cancellationToken);
+            var restored = await EnsureVerifiedSessionAsync("下载过程中检测到 Cloudflare 会话失效，正在自动恢复...", cancellationToken, RecoveryRequestUrl(ex) ?? source.Url);
             if (!isRetry && restored && queueItem is not null)
             {
                 var refreshed = await ResolveQueueItemSourceAsync(queueItem, cancellationToken);

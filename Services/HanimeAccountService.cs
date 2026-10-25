@@ -15,15 +15,15 @@ public sealed class HanimeAccountService
     private static readonly Regex PageQueryRegex = new(@"[?&]page=(\d+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private readonly CloudflareWindow _browserWindow;
-    private readonly string _siteBase;
-    private readonly Uri _siteBaseUri;
+    // Follow the verified browser origin, not the configured profile's original host.
+    private string _siteBase => _siteBaseUri.GetLeftPart(UriPartial.Authority);
+    private Uri _siteBaseUri => _browserWindow.SessionBaseUri;
     private string _csrfToken = string.Empty;
 
     public HanimeAccountService(CloudflareWindow browserWindow, string siteHost)
     {
         _browserWindow = browserWindow;
-        _siteBase = $"https://{siteHost}";
-        _siteBaseUri = new Uri($"{_siteBase}/");
+        // Keep the siteHost parameter for compatibility; the browser owns the session origin.
     }
 
     public async Task<HanimeAccountIdentity> EnsureLoggedInAsync(
@@ -267,7 +267,7 @@ public sealed class HanimeAccountService
     {
         if (CloudflareDetection.IsChallengePage(response.Html, response.Title))
         {
-            throw new InvalidOperationException("请求被 Cloudflare 挑战页拦截，请先完成站点验证后重试。");
+            throw new CloudflareChallengeException("请求被 Cloudflare 挑战页拦截，请先完成站点验证后重试。", response.Url);
         }
 
         return response;

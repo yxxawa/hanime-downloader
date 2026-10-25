@@ -29,6 +29,7 @@
 
   <ItemGroup>
     <None Remove="**\*.xml" />
+    <Compile Remove="Tests\**\*.cs" />
   </ItemGroup>
 
   <ItemGroup>

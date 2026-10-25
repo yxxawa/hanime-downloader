@@ -38,7 +38,7 @@ public partial class CloudflareWindow
 
             if (navigation.HttpStatusCode == 403)
             {
-                throw new InvalidOperationException("站点返回 HTTP 403，Cloudflare 会话失效，请重新验证。");
+                throw new CloudflareChallengeException("站点返回 HTTP 403，Cloudflare 会话失效，请重新验证。", targetUrl);
             }
 
             await WaitForPageContentAsync(relativeUrl, cancellationToken);
@@ -64,8 +64,8 @@ public partial class CloudflareWindow
 
     /// <summary>
     /// 启动时静默复用浏览器里已有的 Cloudflare 会话（窗口保持隐藏）。
-    /// 不再依赖 NavigationCompleted：托管挑战通过后页面会 location.reload()，
-    /// 首跳通常以 ConnectionAborted 结束，但 cf_clearance 其实已经拿到。
+    /// 等待跳转后的实际站点页面和对应域的 Cookie 就绪，不能拿旧域 Cookie 提前报告成功。
+    /// 托管挑战可能中止首跳并重新加载，因此持续轮询而不把首跳失败当作最终结果。
     /// </summary>
     public async Task<bool> TryReuseSessionAsync()
     {
@@ -78,6 +78,7 @@ public partial class CloudflareWindow
         await _fetchLock.WaitAsync();
         try
         {
+            _navigationPending = true;
             Browser.CoreWebView2.Navigate(_siteBaseUrl);
             var reused = await WaitForClearanceAsync(SessionReuseMaxWait, CancellationToken.None);
             if (reused)
@@ -95,7 +96,7 @@ public partial class CloudflareWindow
         }
     }
 
-    /// <summary>轮询 Cookie 直到拿到未过期的 cf_clearance（不依赖页面导航状态）。</summary>
+    /// <summary>等待实际站点页面及该域的有效 cf_clearance，而非其他别名的旧 Cookie。</summary>
     private async Task<bool> WaitForClearanceAsync(TimeSpan maxWait, CancellationToken cancellationToken)
     {
         var startedAt = DateTime.UtcNow;
@@ -107,9 +108,7 @@ public partial class CloudflareWindow
                 return false;
             }
 
-            Cookies = await _cookieBridge.ExportCookiesAsync(Browser.CoreWebView2.CookieManager);
-            CookieHeader = _cookieBridge.BuildCookieHeader(Cookies);
-            if (HasValidClearance())
+            if (await TryRefreshReadySessionAsync())
             {
                 return true;
             }
@@ -123,13 +122,25 @@ public partial class CloudflareWindow
         }
     }
 
-    private bool HasValidClearance()
+    private bool HasValidClearance() => _cookieBridge.HasValidClearance(Cookies);
+
+    private async Task<bool> TryRefreshReadySessionAsync()
     {
-        var nowUnixSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        return Cookies.Any(cookie =>
-            cookie.Name.Equals("cf_clearance", StringComparison.OrdinalIgnoreCase) &&
-            !string.IsNullOrWhiteSpace(cookie.Value) &&
-            (cookie.Expires is not { } expires || expires <= 0 || expires > nowUnixSeconds + 30));
+        if (_navigationPending || !IsCurrentPageOnSite()) return false;
+        var payload = await Browser.CoreWebView2.ExecuteScriptAsync(
+            "JSON.stringify({ html: document.documentElement?.outerHTML ?? '', title: document.title, ready: document.readyState, href: location.href })");
+        var state = DeserializeScriptResult<PageState>(payload);
+        if (_navigationPending || state is null || state.Ready is not ("interactive" or "complete") ||
+            !Uri.TryCreate(state.Href, UriKind.Absolute, out var pageUri) ||
+            pageUri.GetLeftPart(UriPartial.Authority) != SessionBaseUri.GetLeftPart(UriPartial.Authority) ||
+            CloudflareDetection.IsChallengePage(state.Html ?? string.Empty, state.Title))
+        {
+            return false;
+        }
+
+        Cookies = await _cookieBridge.ExportCookiesAsync(Browser.CoreWebView2.CookieManager);
+        CookieHeader = _cookieBridge.BuildCookieHeader(Cookies);
+        return !_navigationPending && HasValidClearance();
     }
 
     /// <summary>
@@ -137,7 +148,7 @@ public partial class CloudflareWindow
     /// 与整页导航相比：使用真实 Chromium 的 TLS/HTTP2 指纹与同源 Cookie，不会被 Cloudflare 挑战，
     /// 也不需要渲染 DOM（实测单页 200-320ms，可并发）。返回 null 表示当前上下文不可用，由调用方回落导航。
     /// </summary>
-    public async Task<BrowserFetchResult?> TryFetchHtmlInPageAsync(string relativeUrl, CancellationToken cancellationToken = default)
+    public async Task<BrowserFetchResult?> TryFetchHtmlInPageAsync(string relativeUrl, CancellationToken cancellationToken = default, bool verifyRequest = false)
     {
         await EnsureInitializedAsync();
         if (Browser.CoreWebView2 is null || !IsCurrentPageOnSite())
@@ -150,9 +161,13 @@ public partial class CloudflareWindow
         var slot = "__hanimeFetch_" + Guid.NewGuid().ToString("N");
         var slotLiteral = JsonSerializer.Serialize(slot);
         // postMessage 只做一次 JSON 编码；旧的 JSON.stringify + ExecuteScriptAsync 会把整页 HTML 编码两遍。
+        var cacheOption = verifyRequest ? ",cache:'no-store'" : string.Empty;
+        var readBody = verifyRequest
+            ? "let t='';const ct=(r.headers.get('content-type')||'').toLowerCase();if(ct.includes('text/html')||ct.includes('application/xhtml+xml')){t=await r.text();}else{await r.body?.cancel();}"
+            : "const t=await r.text();";
         var script =
-            "(function(){(async function(){try{const r=await fetch(" + urlLiteral + ",{credentials:'include',headers:{'X-Requested-With':'XMLHttpRequest'}});" +
-            "const t=await r.text();chrome.webview.postMessage({slot:" + slotLiteral + ",status:r.status,url:r.url,html:t});}" +
+            "(function(){(async function(){try{const r=await fetch(" + urlLiteral + ",{credentials:'include'" + cacheOption + ",headers:{'X-Requested-With':'XMLHttpRequest'}});" +
+            readBody + "chrome.webview.postMessage({slot:" + slotLiteral + ",status:r.status,url:r.url,html:t});}" +
             "catch(e){chrome.webview.postMessage({slot:" + slotLiteral + ",status:-1,url:'',html:'',error:String(e)});}})();})();";
 
         var completion = new TaskCompletionSource<ScriptFetchPayload>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -320,8 +335,7 @@ public partial class CloudflareWindow
             return false;
         }
 
-        return uri.Host.Equals(_siteHost, StringComparison.OrdinalIgnoreCase) ||
-               uri.Host.Equals($"www.{_siteHost}", StringComparison.OrdinalIgnoreCase);
+        return _sessionContext.TryUpdateFromNavigation(uri.AbsoluteUri);
     }
 
     private static string ExtractTitleFromHtml(string? html)

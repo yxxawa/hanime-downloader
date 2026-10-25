@@ -123,7 +123,7 @@ public partial class MainWindow
             }
 
             SourcesSummaryText.Text = "当前会话失效，正在等待 Cloudflare 重验...";
-            var restored = await EnsureVerifiedSessionAsync("检测到 Cloudflare 会话失效，正在自动打开验证窗口...", cancellationTokenSource.Token);
+            var restored = await EnsureVerifiedSessionAsync("检测到 Cloudflare 会话失效，正在自动打开验证窗口...", cancellationTokenSource.Token, RecoveryRequestUrl(ex));
             if (restored && !isRetry && !cancellationTokenSource.IsCancellationRequested)
             {
                 SourcesSummaryText.Text = "会话已恢复，正在重新读取详情与视频源...";

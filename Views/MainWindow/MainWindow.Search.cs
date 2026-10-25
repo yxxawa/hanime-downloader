@@ -339,7 +339,7 @@ public partial class MainWindow
         }
         catch (Exception ex) when (IsCloudflareSessionError(ex))
         {
-            var restored = await EnsureVerifiedSessionAsync("检测到 Cloudflare 会话失效，正在自动打开验证窗口...");
+            var restored = await EnsureVerifiedSessionAsync("检测到 Cloudflare 会话失效，正在自动打开验证窗口...", requestUrl: RecoveryRequestUrl(ex));
             if (restored && !isRetry)
             {
                 await SearchAsync(page, isRetry: true);

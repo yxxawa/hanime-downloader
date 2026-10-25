@@ -119,9 +119,10 @@ public partial class MainWindow
     private void ReplaceHttpSession(IReadOnlyList<BrowserCookieRecord> cookies, string? browserVersion)
     {
         var oldClient = _httpClient;
-        _httpClient = new HanimeHttpClientFactory().Create(cookies, _settings.SiteHost, browserVersion);
-        _apiClient = new HanimeApiClient(_cloudflareWindow!, _httpClient, _settings.SiteHost);
-        _downloadService = new DownloadService(_httpClient, _settings.SiteHost, CreateDownloadRetryPolicy());
+        var sessionHost = _cloudflareWindow?.SessionBaseUri.Host ?? _settings.SiteHost;
+        _httpClient = new HanimeHttpClientFactory().Create(cookies, sessionHost, browserVersion);
+        _apiClient = new HanimeApiClient(_cloudflareWindow!, _httpClient, sessionHost);
+        _downloadService = new DownloadService(_httpClient, sessionHost, CreateDownloadRetryPolicy());
 
         if (oldClient is null)
         {
@@ -251,9 +252,16 @@ public partial class MainWindow
                string.Equals(uri.Host, $"www.{_settings.SiteHost}", StringComparison.OrdinalIgnoreCase);
     }
 
-    private async Task<bool> EnsureVerifiedSessionAsync(string reason, CancellationToken cancellationToken = default)
+    private readonly VerificationRequestSet _verificationRequests = new();
+
+    private static string? RecoveryRequestUrl(Exception exception) =>
+        (exception as CloudflareChallengeException)?.RequestUrl;
+
+    private async Task<bool> EnsureVerifiedSessionAsync(string reason, CancellationToken cancellationToken = default, string? requestUrl = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (_sessionRecoveryTask is null) _verificationRequests.Clear();
+        _verificationRequests.Add(requestUrl);
         var operationId = CreateOperationId("cfrecover");
         if (_sessionRecoveryTask is not null)
         {
@@ -273,6 +281,7 @@ public partial class MainWindow
             if (ReferenceEquals(_sessionRecoveryTask, recoveryTask))
             {
                 _sessionRecoveryTask = null;
+                _verificationRequests.Clear();
             }
         }
     }
@@ -283,7 +292,10 @@ public partial class MainWindow
         _cloudflareWindow ??= new CloudflareWindow(_settings.SiteHost) { Owner = this };
         StatusText.Text = $"{reason} 请在弹出的窗口中完成验证。";
         LogInfo("cloudflare", $"[{operationId}] {reason}");
-        var verified = await _cloudflareWindow.VerifyAsync(forceRefresh: false, cancellationToken, showImmediately: true);
+        var verified = await _cloudflareWindow.VerifyAsync(forceRefresh: false, cancellationToken, showImmediately: true,
+            confirmRecoveryAsync: token => _verificationRequests.ConfirmAsync(
+                (url, ct) => _cloudflareWindow.ProbeVerificationRequestAsync(url, ct), token),
+            isRecoveryConfirmed: () => _verificationRequests.IsConfirmed);
         cancellationToken.ThrowIfCancellationRequested();
         if (!verified || _cloudflareWindow.Cookies.Count == 0 || string.IsNullOrWhiteSpace(_cloudflareWindow.CookieHeader))
         {

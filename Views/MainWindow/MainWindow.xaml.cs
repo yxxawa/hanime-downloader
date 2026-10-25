@@ -467,7 +467,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
                 var cachedCookies = LoadCookieCache().ToList();
                 _appState.Cookies = cachedCookies;
-                _appState.CookieHeader = string.Join("; ", cachedCookies.Select(cookie => $"{cookie.Name}={cookie.Value}"));
+                _appState.CookieHeader = new CookieSessionBridge(_settings.SiteHost).BuildCookieHeader(cachedCookies);
                 _appState.BrowserVersion = string.Empty;
                 InitSessionWithoutCf(cachedCookies, _appState.BrowserVersion);
 
