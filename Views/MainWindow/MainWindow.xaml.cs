@@ -247,6 +247,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                         Quality = item.Quality,
                         VideoId = item.VideoId,
                         TargetPath = item.TargetPath,
+                        NamingRule = item.NamingRule,
+                        NamingAuthor = item.NamingAuthor,
+                        NamingDate = item.NamingDate,
+                        UploadDate = item.UploadDate,
+                        NamingTime = item.NamingTime,
                         HasError = item.HasError
                     }), FavoritesJsonOptions));
             }
@@ -267,51 +272,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         RestoreWindowBounds();
         LoadPersistedBrowsingData();
         _ = CheckForUpdatesOnStartupAsync();
-        var startupStatus = "已启动，如遇访问问题请手动验证。";
-        try
+        _startupSessionTask = RestoreStartupSessionAsync(_startupSessionCancellation.Token);
+        var startupStatus = await _startupSessionTask;
+        if (!_startupSessionCancellation.IsCancellationRequested)
         {
-            _cloudflareWindow ??= new CloudflareWindow(_settings.SiteHost) { Owner = this };
-            _cloudflareWindow.Closed += (_, _) => _cloudflareWindow = null;
-
-            // 先静默复用浏览器里现存的 Cloudflare 会话（后台通过托管挑战，不弹窗）。
-            // 成功就完全不碰磁盘缓存，避免用旧 Cookie 覆盖掉仍然有效的会话。
-            var reused = await TryReuseSessionSilentlyAsync("启动时自动恢复会话");
-
-            // 会话确实不可用时，才导入磁盘缓存里的 Cookie 再试一次。
-            if (!reused)
-            {
-                var cached = LoadCookieCache();
-                if (cached.Count > 0)
-                {
-                    try
-                    {
-                        await _cloudflareWindow.ImportCookiesAsync(cached);
-                        reused = await TryReuseSessionSilentlyAsync("导入缓存 Cookie 后自动恢复会话");
-                    }
-                    catch (Exception ex)
-                    {
-                        LogInfo("cloudflare", $"导入缓存 Cookie 后自动恢复失败: {ex.Message}");
-                    }
-                }
-            }
-
-            if (reused)
-            {
-                startupStatus = $"已自动恢复 Cloudflare 会话。当前共 {_appState.Cookies.Count} 个 Cookie。";
-            }
-            else
-            {
-                InitSessionWithoutCf();
-            }
+            ApplyStartupWarnings(startupStatus);
+            await SyncAccountFavoritesOnStartupAsync();
         }
-        catch (Exception ex)
-        {
-            HandleUiActionError("startup", "初始化失败", ex);
-            InitSessionWithoutCf();
-        }
-
-        ApplyStartupWarnings(startupStatus);
-        await SyncAccountFavoritesOnStartupAsync();
 
         // 孤儿临时文件清理：只删 7 天前且不被当前队列引用的 .tmp/.hls。
         // 引用集合在 UI 线程构建（ObservableCollection 非线程安全），扫描放到后台线程。
@@ -560,10 +527,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _settings.PersistDownloadQueue = loaded.PersistDownloadQueue;
             _settings.MaxConcurrentDownloads = Math.Clamp(loaded.MaxConcurrentDownloads, 1, 3);
             _settings.MaxRetries = Math.Clamp(loaded.MaxRetries, 0, 8);
-            if (string.IsNullOrWhiteSpace(_settings.FileNamingRule) || !_settings.FileNamingRule.Contains('{'))
+            if (!DownloadNaming.TryValidate(_settings.FileNamingRule, out var namingError))
             {
                 _settings.FileNamingRule = "{title}_{videoId}";
-                AddStartupWarning("文件命名规则不含占位符，已重置为 {title}_{videoId}");
+                AddStartupWarning($"文件命名规则无效（{namingError}），已重置为 {{title}}_{{videoId}}");
             }
             _settings.VideoDetailsVisibility = loaded.VideoDetailsVisibility ?? _settings.VideoDetailsVisibility;
             _settings.PlayerWindow = loaded.PlayerWindow ?? _settings.PlayerWindow;

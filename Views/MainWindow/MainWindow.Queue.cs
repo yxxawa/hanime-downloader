@@ -143,10 +143,14 @@ public partial class MainWindow
                 Type = source.Type,
                 Quality = source.Quality,
                 VideoId = videoId,
-                TargetPath = CreateQueueTargetPath(title, source.Type, videoId, source.Quality),
+                NamingRule = _settings.FileNamingRule,
+                NamingTime = DateTime.Now,
+                UploadDate = _currentDetails?.UploadDate,
                 StageText = "等待",
                 QueueStatusText = "等待中"
             };
+
+            queueItem.TargetPath = CreateQueueTargetPath(queueItem);
 
             if (_isDownloadingQueue)
             {
@@ -268,6 +272,17 @@ public partial class MainWindow
             }
         };
         menu.Items.Add(startItem);
+        var namingItem = new MenuItem
+        {
+            Header = "自定义命名...",
+            IsEnabled = !_isDownloadingQueue && selectedQueueItems.All(CanChangeQueueNaming)
+        };
+        namingItem.Click += async (_, _) =>
+        {
+            try { await CustomizeQueueNamingAsync(selectedQueueItems); }
+            catch (Exception ex) { HandleUiActionError("queue", "修改命名失败", ex); }
+        };
+        menu.Items.Add(namingItem);
 
         if (selectedQueueItems.Any(item => item.QueueState == DownloadQueueState.Error))
         {
@@ -459,6 +474,11 @@ public partial class MainWindow
                     Quality = item.Quality,
                     VideoId = item.VideoId,
                     TargetPath = item.TargetPath,
+                    NamingRule = DownloadNaming.TryValidate(item.NamingRule, out _) ? item.NamingRule : null,
+                    NamingAuthor = item.NamingAuthor,
+                    NamingDate = item.NamingDate,
+                    UploadDate = item.UploadDate,
+                    NamingTime = item.NamingTime ?? DateTime.Now,
                     StageText = item.HasError ? "失败" : "等待",
                     QueueStatusText = item.HasError ? "失败" : "等待中",
                     QueueState = item.HasError ? DownloadQueueState.Error : DownloadQueueState.Waiting,
@@ -493,6 +513,11 @@ public partial class MainWindow
             Quality = item.Quality,
             VideoId = item.VideoId,
             TargetPath = item.TargetPath,
+            NamingRule = item.NamingRule,
+            NamingAuthor = item.NamingAuthor,
+            NamingDate = item.NamingDate,
+            UploadDate = item.UploadDate,
+            NamingTime = item.NamingTime,
             HasError = item.HasError
         }).ToList();
         await AtomicFile.WriteAllTextAsync(DownloadQueueFilePath, JsonSerializer.Serialize(items, FavoritesJsonOptions));
@@ -528,17 +553,20 @@ public partial class MainWindow
                 alreadyInHistory++;
             }
 
-            _downloadQueue.Add(new DownloadQueueItem
+            var queued = new DownloadQueueItem
             {
                 Title = string.IsNullOrWhiteSpace(video.Title) ? video.VideoId : video.Title,
                 Url = video.Url,
                 Type = "mp4",
                 Quality = 0,
                 VideoId = video.VideoId,
-                TargetPath = CreateQueueTargetPath(string.IsNullOrWhiteSpace(video.Title) ? video.VideoId : video.Title, "mp4", video.VideoId, 0),
+                NamingRule = _settings.FileNamingRule,
+                NamingTime = DateTime.Now,
                 StageText = "等待",
                 QueueStatusText = "等待中"
-            });
+            };
+            queued.TargetPath = CreateQueueTargetPath(queued);
+            _downloadQueue.Add(queued);
             added++;
         }
 
@@ -552,6 +580,48 @@ public partial class MainWindow
         {
             await StartQueueDownloadAsync();
         }
+    }
+
+    private static bool CanChangeQueueNaming(DownloadQueueItem item) => !item.IsDownloading &&
+        (string.IsNullOrWhiteSpace(item.TargetPath) ||
+         (!File.Exists(item.TargetPath) && !File.Exists(item.TargetPath + ".tmp") && !Directory.Exists(item.TargetPath + ".hls")));
+
+    private async Task CustomizeQueueNamingAsync(IReadOnlyList<DownloadQueueItem> items)
+    {
+        if (_isDownloadingQueue || items.Count == 0 || items.Any(item => !CanChangeQueueNaming(item)))
+        {
+            StatusText.Text = "请先暂停队列；已有下载文件或续传数据的项目不能修改命名。";
+            return;
+        }
+        var first = items[0];
+        var dialog = new QueueNamingDialog(first.NamingRule ?? _settings.FileNamingRule,
+            new DownloadNamingContext(first.Title, first.VideoId, first.Quality, first.NamingAuthor,
+                first.UploadDate, first.NamingTime), items.Count, first.NamingAuthor, first.NamingDate) { Owner = this };
+        if (dialog.ShowDialog() != true) return;
+        if (_isDownloadingQueue || items.Any(item => !_downloadQueue.Contains(item) || !CanChangeQueueNaming(item))) return;
+        // 先验证所有目标路径，再更新队列；不会移动、覆盖或删除任何现有下载。
+        var changes = items.Select(item => new
+        {
+            Item = item,
+            Author = items.Count == 1 ? dialog.AuthorOverride : item.NamingAuthor,
+            Date = items.Count == 1 ? dialog.DateOverride : item.NamingDate,
+            Time = item.NamingTime ?? DateTime.Now
+        }).Select(change => new
+        {
+            change.Item, change.Author, change.Date, change.Time,
+            Path = CreateQueueTargetPath(change.Item.Title, change.Item.Type, change.Item.VideoId, change.Item.Quality,
+                dialog.NamingRule, change.Author, change.Date ?? change.Item.UploadDate, change.Time)
+        }).ToList();
+        foreach (var change in changes)
+        {
+            change.Item.NamingRule = dialog.NamingRule;
+            change.Item.NamingAuthor = change.Author;
+            change.Item.NamingDate = change.Date;
+            change.Item.NamingTime = change.Time;
+            change.Item.TargetPath = change.Path;
+        }
+        var saved = await TrySaveDownloadQueueAsync("queue", "保存自定义命名失败");
+        StatusText.Text = saved ? $"已为 {items.Count} 个选中视频设置命名规则，其他视频不变。" : "命名已更新，但保存队列失败。";
     }
 
     private VideoSource? SelectSourceByQuality(IReadOnlyList<VideoSource>? sources)
@@ -607,6 +677,9 @@ public partial class MainWindow
         }
 
         item.Title = string.IsNullOrWhiteSpace(details?.Title) ? item.Title : details!.Title;
+        item.NamingRule ??= _settings.FileNamingRule;
+        item.NamingTime ??= DateTime.Now;
+        if (!string.IsNullOrWhiteSpace(details?.UploadDate)) item.UploadDate = details.UploadDate;
         item.Url = source.Url;
         item.Type = source.Type;
         item.Quality = source.Quality;
@@ -617,7 +690,7 @@ public partial class MainWindow
             (File.Exists(item.TargetPath) || File.Exists(item.TargetPath + ".tmp") || Directory.Exists(item.TargetPath + ".hls"));
         if (!hasExistingDownload)
         {
-            var regenerated = CreateQueueTargetPath(item.Title, item.Type, item.VideoId, item.Quality);
+            var regenerated = CreateQueueTargetPath(item);
             if (!string.Equals(regenerated, item.TargetPath, StringComparison.OrdinalIgnoreCase))
             {
                 item.TargetPath = regenerated;

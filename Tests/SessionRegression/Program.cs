@@ -5,7 +5,7 @@ using Hanime1Downloader.CSharp.Models;
 using Hanime1Downloader.CSharp.Services;
 using Hanime1Downloader.CSharp.Views;
 
-internal static class Program
+internal static partial class Program
 {
     private static int _passes;
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
@@ -28,13 +28,20 @@ internal static class Program
     private static async Task<bool> Blocked(Func<Task> action)
     {
         try { await action(); return false; }
-        catch (InvalidOperationException ex) when (ex.Message.Contains("Cloudflare")) { return true; }
+        catch (CloudflareChallengeException) { return true; }
     }
     private static Task<BrowserFetchResult> Raw(HanimeApiClient api, string url) =>
         (Task<BrowserFetchResult>)typeof(HanimeApiClient).GetMethod("FetchHtmlAsync", Private)!.Invoke(api, [url, CancellationToken.None, false])!;
 
     private static async Task Main()
     {
+        var crowdedSession = new CookieSessionBridge("hanime1.me");
+        var crowdedCookies = new[] { Cookie(".hanime1.me") }
+            .Concat(Enumerable.Range(0, 40).Select(i => Cookie(".hanime1.me", "site_cookie_" + i))).ToArray();
+        Check(crowdedSession.HasValidClearance(crowdedCookies), "captured clearance survives more than twenty cookies on the same site");
+        Check(crowdedSession.BuildCookieHeader(crowdedCookies).Contains("cf_clearance="), "HTTP Cookie header preserves clearance in a crowded browser session");
+        await CheckFirstRequestAsync();
+        await CheckChallengeRecoveryAsync();
         var session = new SiteSessionContext("hanime1.com");
         Check(session.BaseUri.Host == "hanime1.com", "configured host initializes request origin");
         foreach (var url in new[] { "https://hanime1.me/", "https://www.hanime1.me/search?q=x", "https://www.hanime1.com/", "https://hanime1.com/" })
@@ -99,14 +106,16 @@ internal static class Program
         }
         foreach (var status in new[] { 200, 403 })
         {
-            var b = Browser(null, Good);
+            var b = Browser(null, Challenge(status));
+            b.NavigationResponse = Challenge(status);
             using var handler = new Handler(Challenge(status));
             using var http = new HttpClient(handler);
             Check(await Blocked(() => new HanimeApiClient(b, http).SearchAsync("blocked")), "HTTP challenge still reaches verification handler: " + status);
-            Check(handler.Requests.Count == 1 && b.RecoverCalls == 0, "existing challenge escalation policy unchanged: " + status);
+            Check(handler.Requests.Count == 1 && b.RecoverCalls == 1 && b.NavigateCalls == 1, "persistent HTTP challenge escalates after bounded browser recovery: " + status);
         }
         {
-            var b = Browser(Challenge());
+            var b = Browser(Challenge(), Challenge());
+            b.NavigationResponse = Challenge();
             using var handler = new Handler(Good);
             using var http = new HttpClient(handler);
             Check(await Blocked(() => new HanimeApiClient(b, http).SearchAsync("blocked")) && handler.Requests.Count == 0,
@@ -139,6 +148,7 @@ internal static class Program
                 "recovered" => Browser(null, sample.Response),
                 _ => Browser()
             };
+            b.NavigationResponse = sample.Response;
             using var handler = new Handler(sample.Response);
             using var http = new HttpClient(handler);
             var api = new HanimeApiClient(b, route == "http" ? http : null);
@@ -155,8 +165,9 @@ internal static class Program
                   receipt.Contains($"status={sample.Response.Status} blocked={sample.Blocked}") &&
                   AppLogger.Messages.All(x => !x.Contains("成功")) &&
                   handler.Requests.Count == (route == "http" ? 1 : 0) &&
-                  b.RecoverCalls == (route == "recovered" ? 1 : 0) && b.NavigateCalls == 0,
-                $"{route}: {sample.Name} logs receipt/status/blocking without false success; routing and CF escalation remain unchanged");
+                  b.RecoverCalls == (sample.Blocked || route == "recovered" ? 1 : 0) &&
+                  b.NavigateCalls == (sample.Blocked ? 1 : 0),
+                $"{route}: {sample.Name} logs receipt/status/blocking without false success and preserves final CF escalation");
         }
         // Auto-completion must confirm the failed endpoint, not just the homepage or a cookie.
         var origin = new SiteSessionContext("hanime1.com");
@@ -220,6 +231,7 @@ internal static class Program
         Check(!pending.IsConfirmed, "clearing recovery invalidates the completed snapshot");
         {
             var b = Browser();
+            b.NavigationResponse = Challenge();
             using var handler = new Handler(Challenge()); using var http = new HttpClient(handler);
             CloudflareChallengeException? blocked = null;
             try { await new HanimeApiClient(b, http).SearchAsync("original-request"); }

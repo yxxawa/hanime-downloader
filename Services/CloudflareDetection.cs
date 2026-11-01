@@ -1,3 +1,5 @@
+using Hanime1Downloader.CSharp.Models;
+
 namespace Hanime1Downloader.CSharp.Services;
 
 /// <summary>
@@ -10,6 +12,10 @@ namespace Hanime1Downloader.CSharp.Services;
 /// </summary>
 public static class CloudflareDetection
 {
+    /// <summary>HTTP 403 或挑战页均不能作为正常业务响应，交给浏览器恢复或验证流程。</summary>
+    public static bool IsBlockedResponse(BrowserFetchResult response) =>
+        response.Status == 403 || IsChallengePage(response.Html, response.Title);
+
     public static bool IsChallengePage(string? html, string? title = null) =>
         FindChallengeMarker(html, title) is not null;
 

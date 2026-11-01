@@ -42,6 +42,11 @@ public partial class MainWindow
         public int Quality { get; init; }
         public required string VideoId { get; init; }
         public string TargetPath { get; init; } = string.Empty;
+        public string? NamingRule { get; set; }
+        public string? NamingAuthor { get; set; }
+        public string? NamingDate { get; set; }
+        public string? UploadDate { get; set; }
+        public DateTime? NamingTime { get; set; }
         public bool HasError { get; init; }
     }
 
@@ -159,6 +164,11 @@ public partial class MainWindow
         private int _quality;
         private string _videoId = string.Empty;
         private string _targetPath = string.Empty;
+        public string? NamingRule { get; set; }
+        public string? NamingAuthor { get; set; }
+        public string? NamingDate { get; set; }
+        public string? UploadDate { get; set; }
+        public DateTime? NamingTime { get; set; }
         private bool _isDownloading;
         private bool _hasError;
         private DownloadQueueState _queueState = DownloadQueueState.Waiting;

@@ -67,7 +67,9 @@ public partial class MainWindow
         try
         {
             downloadDirectory = EnsureDownloadDirectory();
-            targetPath = CreateQueueTargetPath(title, source.Type, videoId, source.Quality);
+            targetPath = queueItem is null
+                ? CreateQueueTargetPath(title, source.Type, videoId, source.Quality)
+                : CreateQueueTargetPath(queueItem);
             if (queueItem is not null && !string.IsNullOrWhiteSpace(queueItem.TargetPath))
             {
                 try
@@ -348,14 +350,18 @@ public partial class MainWindow
         }
     }
 
-    private string CreateQueueTargetPath(string? title, string? type, string? videoId, int quality)
+    private string CreateQueueTargetPath(string? title, string? type, string? videoId, int quality,
+        string? namingRule = null, string? author = null, string? uploadDate = null, DateTime? namingTime = null)
     {
-        // HLS 会被合并为单个媒体文件，输出统一用 .mp4（与旧版行为一致）。
-        var extension = ".mp4";
-        var downloadDirectory = EnsureDownloadDirectory();
-        var fileName = BuildSuggestedFileName(title, extension, videoId, quality);
-        return GetDownloadTargetPath(downloadDirectory, fileName);
+        // HLS 与 MP4 都输出 MP4；先按模板建立相对路径，再执行下载根目录约束。
+        var relativePath = DownloadNaming.BuildRelativePath(namingRule ?? _settings.FileNamingRule,
+            new DownloadNamingContext(title, videoId, quality, author, uploadDate, namingTime));
+        return GetDownloadTargetPath(EnsureDownloadDirectory(), relativePath);
     }
+
+    private string CreateQueueTargetPath(DownloadQueueItem item) => CreateQueueTargetPath(
+        item.Title, item.Type, item.VideoId, item.Quality, item.NamingRule,
+        item.NamingAuthor, item.NamingDate ?? item.UploadDate, item.NamingTime);
 
     private static string GetDownloadTargetPath(string directory, string fileName)
     {
@@ -369,23 +375,6 @@ public partial class MainWindow
             ? AppPaths.DefaultDownloadDirectory
             : _settings.DownloadPath;
         return DownloadPathGuard.NormalizeDirectory(directory);
-    }
-
-    private string BuildSuggestedFileName(string? title, string extension, string? videoId = null, int quality = 0)
-    {
-        var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-        var safeTitle = string.IsNullOrWhiteSpace(title) ? $"hanime_{timestamp}" : SanitizeFileName(title);
-        var safeVideoId = string.IsNullOrWhiteSpace(videoId) ? "unknown" : SanitizeFileName(videoId);
-        var qualityText = quality > 0 ? $"{quality}p" : "unknown";
-        var template = string.IsNullOrWhiteSpace(_settings.FileNamingRule) ? "{title}" : _settings.FileNamingRule;
-        var baseName = template
-            .Replace("{title}", safeTitle, StringComparison.OrdinalIgnoreCase)
-            .Replace("{timestamp}", timestamp, StringComparison.OrdinalIgnoreCase)
-            .Replace("{videoId}", safeVideoId, StringComparison.OrdinalIgnoreCase)
-            .Replace("{quality}", qualityText, StringComparison.OrdinalIgnoreCase);
-
-        baseName = SanitizeFileName(baseName);
-        return $"{baseName}{extension}";
     }
 
     private static string SanitizeFileName(string title)

@@ -55,8 +55,13 @@ public sealed class CookieSessionBridge
 
     public CookieContainer CreateCookieContainer(IEnumerable<BrowserCookieRecord> cookies)
     {
-        var container = new CookieContainer();
-        foreach (var record in cookies)
+        // CookieContainer 默认每域只保留 20 条，转换浏览器快照时可能挤掉 cf_clearance。
+        var records = cookies.ToArray();
+        var container = new CookieContainer(
+            Math.Max(CookieContainer.DefaultCookieLimit, records.Length),
+            Math.Max(CookieContainer.DefaultPerDomainCookieLimit, records.Length),
+            CookieContainer.DefaultCookieLengthLimit);
+        foreach (var record in records)
         {
             if (!_session.IsTrustedCookieDomain(record.Domain) ||
                 string.IsNullOrWhiteSpace(record.Name) || string.IsNullOrWhiteSpace(record.Value))

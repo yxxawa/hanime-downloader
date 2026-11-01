@@ -67,17 +67,6 @@ public partial class SettingsDialog : Window
             }
         };
 
-        NamingRuleCombo.ItemsSource = new List<NamingRuleOption>
-        {
-            new NamingRuleOption { Label = "标题", Value = "{title}" },
-            new() { Label = "标题 + 画质", Value = "{title}_{quality}" },
-            new() { Label = "标题 + 视频ID", Value = "{title}_{videoId}" },
-            new() { Label = "标题 + 画质 + 时间", Value = "{title}_{quality}_{timestamp}" },
-            new() { Label = "视频ID + 画质", Value = "{videoId}_{quality}" },
-            new() { Label = "标题 + 时间", Value = "{title}_{timestamp}" },
-            new() { Label = "时间", Value = "{timestamp}" }
-        };
-
         InitializeSiteOptions();
         var normalizedCurrentSiteHost = NormalizeSiteHost(Settings.SiteHost);
         SiteCombo.ItemsSource = _siteOptions;
@@ -115,7 +104,7 @@ public partial class SettingsDialog : Window
             .ToList();
 
         DownloadPathBox.Text = Settings.DownloadPath;
-        NamingRuleCombo.SelectedValue = Settings.FileNamingRule;
+        NamingEditor.RuleText = Settings.FileNamingRule;
         SiteCombo.SelectedValue = normalizedCurrentSiteHost;
         SiteCombo.Text = normalizedCurrentSiteHost;
         QualityCombo.SelectedValue = Settings.DefaultQuality;
@@ -138,13 +127,7 @@ public partial class SettingsDialog : Window
         ShowTagsCheckBox.IsChecked = Settings.VideoDetailsVisibility.Tags;
         ShowCoverCheckBox.IsChecked = Settings.VideoDetailsVisibility.Cover;
         ShowRelatedVideosCheckBox.IsChecked = Settings.VideoDetailsVisibility.RelatedVideos;
-        if (NamingRuleCombo.SelectedIndex < 0)
-        {
-            NamingRuleCombo.SelectedIndex = 0;
-        }
-
         UpdateDownloadPathHint();
-        UpdateNamingPreview();
         UpdateSiteHint();
     }
 
@@ -315,11 +298,6 @@ public partial class SettingsDialog : Window
         UpdateDownloadPathHint();
     }
 
-    private void NamingRuleCombo_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        UpdateNamingPreview();
-    }
-
     private void SiteCombo_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (SiteCombo.SelectedItem is SiteOption option)
@@ -452,9 +430,15 @@ public partial class SettingsDialog : Window
             return;
         }
 
+        if (!DownloadNaming.TryValidate(NamingEditor.RuleText, out var namingError))
+        {
+            MessageBox.Show(this, namingError, "保存设置", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         AddCustomSiteIfNeeded(siteHost);
         Settings.DownloadPath = downloadPath;
-        Settings.FileNamingRule = NamingRuleCombo.SelectedValue as string ?? "{title}";
+        Settings.FileNamingRule = NamingEditor.RuleText;
         Settings.SiteHost = siteHost;
         Settings.DefaultQuality = QualityCombo.SelectedValue as string ?? "highest";
         Settings.ShowListCovers = ShowListCoversCheckBox.IsChecked == true;
@@ -494,12 +478,6 @@ public partial class SettingsDialog : Window
         DownloadPathHintText.Text = Directory.Exists(path)
             ? $"当前目录可用: {path}"
             : $"目录不存在，保存后下载时会尝试自动创建: {path}";
-    }
-
-    private void UpdateNamingPreview()
-    {
-        var template = NamingRuleCombo.SelectedValue as string ?? Settings.FileNamingRule;
-        NamingPreviewText.Text = $"命名预览: {BuildFileNamePreview(template)}";
     }
 
     private void UpdateSiteHint()
@@ -640,25 +618,6 @@ public partial class SettingsDialog : Window
 
         errorMessage = string.Empty;
         return true;
-    }
-
-    private static string BuildFileNamePreview(string? template)
-    {
-        var namingTemplate = string.IsNullOrWhiteSpace(template) ? "{title}" : template;
-        var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-        var fileName = namingTemplate
-            .Replace("{title}", SanitizeFileName("示例视频标题"), StringComparison.OrdinalIgnoreCase)
-            .Replace("{timestamp}", timestamp, StringComparison.OrdinalIgnoreCase)
-            .Replace("{videoId}", "123456", StringComparison.OrdinalIgnoreCase)
-            .Replace("{quality}", "720p", StringComparison.OrdinalIgnoreCase);
-        return $"{SanitizeFileName(fileName)}.mp4";
-    }
-
-    private static string SanitizeFileName(string value)
-    {
-        var invalidChars = Path.GetInvalidFileNameChars();
-        var cleaned = new string(value.Select(ch => invalidChars.Contains(ch) ? '_' : ch).ToArray()).Trim();
-        return string.IsNullOrWhiteSpace(cleaned) ? $"hanime_{DateTime.Now:yyyyMMdd_HHmmss}" : cleaned;
     }
 
     private sealed class NamingRuleOption

@@ -34,13 +34,16 @@ public partial class CloudflareWindow : Window
 
     private bool _isCheckingState;
 
-    private readonly DispatcherTimer _pollTimer = new() { Interval = TimeSpan.FromSeconds(1.5) };
+    private readonly DispatcherTimer _pollTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly CookieSessionBridge _cookieBridge;
     private readonly string _siteHost;
     private readonly SiteSessionContext _sessionContext;
     private string _siteBaseUrl => SessionBaseUri.AbsoluteUri;
     private bool _navigationPending;
     private ulong _navigationId;
+    private ulong? _readyDocumentNavigationId;
+    private int _navigationStatusCode;
+    private string _sessionReadinessMessage = "正在读取验证状态...";
 
     public Uri SessionBaseUri => _sessionContext.BaseUri;
     private readonly SemaphoreSlim _fetchLock = new(1, 1);
@@ -209,8 +212,11 @@ public partial class CloudflareWindow : Window
         Browser.CoreWebView2.NavigationStarting += (_, args) =>
         {
             _navigationPending = true;
+            _readyDocumentNavigationId = null;
+            _navigationStatusCode = 0;
             _navigationId = args.NavigationId;
         };
+        Browser.CoreWebView2.DOMContentLoaded += OnDomContentLoaded;
         Browser.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
         Browser.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
         _initialized = true;
@@ -280,6 +286,7 @@ public partial class CloudflareWindow : Window
 
     private sealed class PageState
     {
+        public int Status { get; set; }
         public string? Html { get; set; }
         public string? Title { get; set; }
         public string? Ready { get; set; }

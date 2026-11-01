@@ -4,6 +4,7 @@ namespace Hanime1Downloader.CSharp.Views;
 
 public partial class CloudflareWindow
 {
+    private bool _isFinishingManually;
     private Func<CancellationToken, Task<bool>>? _confirmRecoveryAsync;
     private Func<bool>? _isRecoveryConfirmed;
     private CancellationTokenSource? _verificationCancellation;

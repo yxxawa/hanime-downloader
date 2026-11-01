@@ -1,0 +1,26 @@
+<Window x:Class="Hanime1Downloader.CSharp.Views.QueueNamingDialog"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ xmlns:local="clr-namespace:Hanime1Downloader.CSharp.Views"
+ Title="自定义下载命名" Width="570" Height="570" MinWidth="500" MinHeight="480"
+ WindowStartupLocation="CenterOwner" ShowInTaskbar="False" Background="{DynamicResource ThemeDialogBackgroundBrush}">
+ <Grid Margin="16">
+  <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+  <ScrollViewer VerticalScrollBarVisibility="Auto">
+   <StackPanel>
+    <TextBlock x:Name="ScopeText" Margin="0,0,0,12" TextWrapping="Wrap" Foreground="{DynamicResource ThemeTextBrush}"/>
+    <local:NamingRuleEditor x:Name="RuleEditor"/>
+    <StackPanel x:Name="MetadataPanel" Margin="0,12,0,0">
+     <TextBlock Text="作者（留空按标题前缀识别）" Foreground="{DynamicResource ThemeTextBrush}"/>
+     <TextBox x:Name="AuthorBox" Margin="0,5,0,9" Height="30" Padding="7,0" VerticalContentAlignment="Center" TextChanged="Metadata_OnChanged"/>
+     <TextBlock Text="发布日期（yyyy-MM-dd；留空读取站点）" Foreground="{DynamicResource ThemeTextBrush}"/>
+     <TextBox x:Name="DateBox" Margin="0,5,0,0" Height="30" Padding="7,0" VerticalContentAlignment="Center" TextChanged="Metadata_OnChanged"/>
+    </StackPanel>
+   </StackPanel>
+  </ScrollViewer>
+  <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
+   <Button Content="应用到选中项" Padding="12,6" IsDefault="True" Click="Apply_OnClick"/>
+   <Button Content="取消" Padding="12,6" Margin="8,0,0,0" IsCancel="True"/>
+  </StackPanel>
+ </Grid>
+</Window>

@@ -152,18 +152,29 @@ public sealed partial class HanimeApiClient
 
     private async Task<BrowserFetchResult> FetchHtmlCoreAsync(string relativeUrl, Uri targetUri, CancellationToken cancellationToken)
     {
-        // 首选：WebView2 页内 fetch。用真实 Chromium 的 TLS/HTTP2 指纹 + 同源 Cookie 取 HTML，
-        // 不会被 Cloudflare 挑战，也不渲染 DOM（实测单页 300-600ms，可并发）。
-        // 直连 .NET HTTP 在代理出口为机房 IP 时会被 Cloudflare 持续挑战，因此降为次选。
+        if (!await _browserWindow.HasValidSessionCookiesAsync(cancellationToken))
+        {
+            throw new CloudflareChallengeException("当前站点没有有效的验证 Cookie，请先完成 Cloudflare 验证。", targetUri.AbsoluteUri);
+        }
+
+        // 优先复用 Chromium 的页内请求，但收到响应不代表已通过验证。
+        // 保留最近的拦截响应：后续恢复或导航失败时，仍须把原请求交给验证流程。
+        BrowserFetchResult? blockedResponse = null;
         var pageFetchWatch = Stopwatch.StartNew();
         try
         {
             var inPage = await _browserWindow.TryFetchHtmlInPageAsync(relativeUrl, cancellationToken);
             if (inPage is not null)
             {
-                AppLogger.InfoThrottled("http", $"页内 fetch 收到响应: {relativeUrl} status={inPage.Status} blocked={inPage.Status == 403 || CloudflareDetection.IsChallengePage(inPage.Html, inPage.Title)} bytes={inPage.Html.Length} ms={pageFetchWatch.ElapsedMilliseconds}", TimeSpan.FromSeconds(3));
+                var blocked = CloudflareDetection.IsBlockedResponse(inPage);
+                AppLogger.InfoThrottled("http", $"页内 fetch 收到响应: {relativeUrl} status={inPage.Status} blocked={blocked} bytes={inPage.Html.Length} ms={pageFetchWatch.ElapsedMilliseconds}", TimeSpan.FromSeconds(3));
                 Debug.WriteLine($"[html-pagefetch] {targetUri} status={inPage.Status} bytes={inPage.Html.Length} ms={pageFetchWatch.ElapsedMilliseconds}");
-                return inPage;
+                if (!blocked)
+                {
+                    return inPage;
+                }
+
+                blockedResponse = inPage;
             }
         }
         catch (OperationCanceledException)
@@ -175,18 +186,24 @@ public sealed partial class HanimeApiClient
             Debug.WriteLine($"[html-pagefetch] failed: {targetUri} {ex.Message}");
         }
 
-        if (_httpClient is not null && IsDirectHttpAvailable())
+        // 浏览器明确被拦截时直接恢复浏览器，不再试探不同指纹的直连 HTTP。
+        if (blockedResponse is null && _httpClient is not null && IsDirectHttpAvailable())
         {
             var direct = await TryFetchViaHttpAsync(targetUri, cancellationToken, DirectHttpMaxAttempts);
             if (direct is not null)
             {
-                AppLogger.InfoThrottled("http", $"直连 HTTP 收到响应: {relativeUrl} status={direct.Status} blocked={direct.Status == 403 || CloudflareDetection.IsChallengePage(direct.Html, direct.Title)}", TimeSpan.FromSeconds(3));
-                return direct;
+                var blocked = CloudflareDetection.IsBlockedResponse(direct);
+                AppLogger.InfoThrottled("http", $"直连 HTTP 收到响应: {relativeUrl} status={direct.Status} blocked={blocked}", TimeSpan.FromSeconds(3));
+                if (!blocked)
+                {
+                    return direct;
+                }
+
+                blockedResponse = direct;
             }
         }
 
-        // 页内 fetch 不可用（例如 WebView2 页面被导航走）：先把它导航回站点首页恢复上下文，再重试一次，
-        // 避免直接退化成被单锁串行化的整页导航（实测单页 3.7-4.9 秒）。
+        // 页内请求不可用或被拦截时，恢复页面上下文并只重试一次。
         try
         {
             if (await _browserWindow.TryRecoverPageContextAsync(cancellationToken))
@@ -194,8 +211,14 @@ public sealed partial class HanimeApiClient
                 var recovered = await _browserWindow.TryFetchHtmlInPageAsync(relativeUrl, cancellationToken);
                 if (recovered is not null)
                 {
-                    AppLogger.InfoThrottled("http", $"恢复页面上下文后页内 fetch 收到响应: {relativeUrl} status={recovered.Status} blocked={recovered.Status == 403 || CloudflareDetection.IsChallengePage(recovered.Html, recovered.Title)}", TimeSpan.FromSeconds(3));
-                    return recovered;
+                    var blocked = CloudflareDetection.IsBlockedResponse(recovered);
+                    AppLogger.InfoThrottled("http", $"恢复页面上下文后页内 fetch 收到响应: {relativeUrl} status={recovered.Status} blocked={blocked}", TimeSpan.FromSeconds(3));
+                    if (!blocked)
+                    {
+                        return recovered;
+                    }
+
+                    blockedResponse = recovered;
                 }
             }
         }
@@ -208,13 +231,22 @@ public sealed partial class HanimeApiClient
             Debug.WriteLine($"[html-pagecontext] recover failed: {ex.Message}");
         }
 
-        AppLogger.InfoThrottled("http", $"页内 fetch 不可用 -> 回落整页导航: {relativeUrl}", TimeSpan.FromSeconds(3));
-        return await _browserWindow.FetchHtmlAsync(relativeUrl, cancellationToken);
+        AppLogger.InfoThrottled("http", $"页内 fetch 不可用或被拦截 -> 回落整页导航: {relativeUrl}", TimeSpan.FromSeconds(3));
+        try
+        {
+            return await _browserWindow.FetchHtmlAsync(relativeUrl, cancellationToken);
+        }
+        catch (Exception ex) when (blockedResponse is not null &&
+                                   ex is not OperationCanceledException && ex is not CloudflareChallengeException)
+        {
+            AppLogger.Info("cloudflare", $"整页导航失败，保留拦截响应交给验证流程: {targetUri} {ex.Message}");
+            return blockedResponse;
+        }
     }
 
     /// <summary>
     /// 直连 HTTP 抓取。网络或服务器瞬时错误按策略重试；403 或明确的 Cloudflare 挑战
-    /// 立即返回给调用方触发验证，避免在已确认会话失效后继续等待重试和整页导航。
+    /// 停止直连重试并进入冷却。拦截响应由调用方保留，再尝试浏览器恢复。
     /// </summary>
     private async Task<BrowserFetchResult?> TryFetchViaHttpAsync(Uri targetUri, CancellationToken cancellationToken, int maxAttempts)
     {
@@ -250,11 +282,11 @@ public sealed partial class HanimeApiClient
                     Title = ExtractHtmlTitle(html)
                 };
 
-                // 已确认会话被拒绝时立即返回，让搜索的验证流程接手，避免重试和导航继续拖延。
-                if (result.Status == 403 || CloudflareDetection.IsChallengePage(html, result.Title))
+                // 直连被拒绝不代表 Chromium 会话失效；保留响应供恢复失败后的验证使用。
+                if (CloudflareDetection.IsBlockedResponse(result))
                 {
                     DisableDirectHttp();
-                    AppLogger.Info("cloudflare", $"直连请求遇到验证，立即交给会话恢复: {targetUri} status={result.Status}");
+                    AppLogger.Info("cloudflare", $"直连请求遇到验证，停止直连重试并交给浏览器恢复: {targetUri} status={result.Status}");
                     return result;
                 }
 

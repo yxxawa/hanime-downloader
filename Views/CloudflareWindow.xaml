@@ -55,7 +55,7 @@
                         Margin="12,0,0,0"
                         IsEnabled="False"
                         Click="FinishButton_OnClick"
-                        Content="重新检查"
+                        Content="验证完成"
                         Style="{StaticResource PrimaryButtonStyle}"/>
                 <TextBlock x:Name="StatusText"
                            VerticalAlignment="Center"

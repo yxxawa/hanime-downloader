@@ -310,6 +310,7 @@ public partial class MainWindow
 
         try
         {
+            await StopStartupSessionRestoreAsync();
             var apiClient = _apiClient;
             if (apiClient is null)
             {

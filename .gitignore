@@ -1,0 +1,9 @@
+# Build and publish outputs
+**/bin/
+**/obj/
+artifacts/
+
+# Local IDE state
+.vs/
+*.user
+*.suo

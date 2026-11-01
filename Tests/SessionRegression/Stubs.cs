@@ -10,23 +10,44 @@ namespace Hanime1Downloader.CSharp.Views
         public Uri SessionBaseUri => Session.BaseUri;
         public Queue<BrowserFetchResult?> Responses { get; } = new();
         public int PageCalls, RecoverCalls, NavigateCalls;
+        public bool HasSessionCookies { get; set; } = true;
+        public Task<bool> HasValidSessionCookiesAsync(CancellationToken token = default)
+        {
+            token.ThrowIfCancellationRequested();
+            return Task.FromResult(HasSessionCookies);
+        }
         public bool RecoverySucceeds = true;
         public BrowserFetchResult NavigationResponse { get; set; } = new() { Status = 200, Html = "<html><title>OK</title></html>" };
-        public Task<BrowserFetchResult?> TryFetchHtmlInPageAsync(string url, CancellationToken token = default)
+        public Func<string, CancellationToken, Task<BrowserFetchResult?>>? PageHandler { get; set; }
+        public Func<CancellationToken, Task<bool>>? RecoveryHandler { get; set; }
+        public Func<string, CancellationToken, Task<BrowserFetchResult>>? NavigationHandler { get; set; }
+        public async Task<BrowserFetchResult?> TryFetchHtmlInPageAsync(string url, CancellationToken token = default)
         {
+            token.ThrowIfCancellationRequested();
             PageCalls++;
-            return Task.FromResult(Responses.Count > 0 ? Responses.Dequeue() : null);
+            var result = PageHandler is not null
+                ? await PageHandler(url, token)
+                : Responses.Count > 0 ? Responses.Dequeue() : null;
+            return result is null ? null : WithRequestUrl(result, url);
         }
         public Task<bool> TryRecoverPageContextAsync(CancellationToken token = default)
         {
+            token.ThrowIfCancellationRequested();
             RecoverCalls++;
-            return Task.FromResult(RecoverySucceeds);
+            return RecoveryHandler?.Invoke(token) ?? Task.FromResult(RecoverySucceeds);
         }
-        public Task<BrowserFetchResult> FetchHtmlAsync(string url, CancellationToken token = default)
+        public async Task<BrowserFetchResult> FetchHtmlAsync(string url, CancellationToken token = default)
         {
+            token.ThrowIfCancellationRequested();
             NavigateCalls++;
-            return Task.FromResult(NavigationResponse);
+            var result = NavigationHandler is not null ? await NavigationHandler(url, token) : NavigationResponse;
+            return WithRequestUrl(result, url);
         }
+        private BrowserFetchResult WithRequestUrl(BrowserFetchResult response, string url) => new()
+        {
+            Status = response.Status, Html = response.Html, Title = response.Title,
+            Url = string.IsNullOrEmpty(response.Url) ? new Uri(SessionBaseUri, url).AbsoluteUri : response.Url
+        };
         public Task<BrowserFetchResult?> PostFormInPageAsync(string url, IReadOnlyDictionary<string, string> fields,
             string? csrfToken = null, CancellationToken cancellationToken = default) => throw new NotImplementedException();
     }

@@ -245,29 +245,66 @@ public sealed class HanimeAccountService
     }
     private async Task<BrowserFetchResult> GetHtmlAsync(string relativeUrl, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!await _browserWindow.HasValidSessionCookiesAsync(cancellationToken))
+        {
+            throw new CloudflareChallengeException("当前站点没有有效的验证 Cookie，请先完成 Cloudflare 验证。", new Uri(_siteBaseUri, relativeUrl).AbsoluteUri);
+        }
+
+        BrowserFetchResult? blockedResponse = null;
         var inPage = await _browserWindow.TryFetchHtmlInPageAsync(relativeUrl, cancellationToken);
         if (inPage is not null)
         {
-            return ValidateHtml(inPage);
+            if (!CloudflareDetection.IsBlockedResponse(inPage))
+            {
+                return inPage;
+            }
+
+            blockedResponse = inPage;
         }
 
-        if (await _browserWindow.TryRecoverPageContextAsync(cancellationToken))
+        try
         {
-            inPage = await _browserWindow.TryFetchHtmlInPageAsync(relativeUrl, cancellationToken);
-            if (inPage is not null)
+            if (await _browserWindow.TryRecoverPageContextAsync(cancellationToken))
             {
-                return ValidateHtml(inPage);
+                inPage = await _browserWindow.TryFetchHtmlInPageAsync(relativeUrl, cancellationToken);
+                if (inPage is not null)
+                {
+                    if (!CloudflareDetection.IsBlockedResponse(inPage))
+                    {
+                        return inPage;
+                    }
+
+                    blockedResponse = inPage;
+                }
             }
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Info("http", $"账号页面上下文恢复失败: {relativeUrl} {ex.Message}");
+        }
 
-        return ValidateHtml(await _browserWindow.FetchHtmlAsync(relativeUrl, cancellationToken));
+        try
+        {
+            return ValidateHtml(await _browserWindow.FetchHtmlAsync(relativeUrl, cancellationToken));
+        }
+        catch (Exception ex) when (blockedResponse is not null &&
+                                   ex is not OperationCanceledException && ex is not CloudflareChallengeException)
+        {
+            AppLogger.Info("cloudflare", $"账号页面导航失败，保留拦截响应交给验证流程: {relativeUrl} {ex.Message}");
+            return ValidateHtml(blockedResponse);
+        }
     }
 
     private static BrowserFetchResult ValidateHtml(BrowserFetchResult response)
     {
-        if (CloudflareDetection.IsChallengePage(response.Html, response.Title))
+        if (CloudflareDetection.IsBlockedResponse(response))
         {
-            throw new CloudflareChallengeException("请求被 Cloudflare 挑战页拦截，请先完成站点验证后重试。", response.Url);
+            throw new CloudflareChallengeException("请求返回 HTTP 403 或 Cloudflare 挑战页，请先完成站点验证后重试。", response.Url);
         }
 
         return response;

@@ -33,6 +33,7 @@ public partial class CloudflareWindow
         Browser.CoreWebView2.NavigationCompleted += HandleNavigationCompleted;
         try
         {
+            _readyDocumentNavigationId = null;
             Browser.CoreWebView2.Navigate(targetUrl);
             var navigation = await navigationCompletionSource.Task.WaitAsync(TimeSpan.FromSeconds(45), cancellationToken);
 
@@ -67,20 +68,22 @@ public partial class CloudflareWindow
     /// 等待跳转后的实际站点页面和对应域的 Cookie 就绪，不能拿旧域 Cookie 提前报告成功。
     /// 托管挑战可能中止首跳并重新加载，因此持续轮询而不把首跳失败当作最终结果。
     /// </summary>
-    public async Task<bool> TryReuseSessionAsync()
+    public async Task<bool> TryReuseSessionAsync(CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync();
+        await EnsureInitializedAsync().WaitAsync(cancellationToken);
         if (Browser.CoreWebView2 is null)
         {
             return false;
         }
 
-        await _fetchLock.WaitAsync();
+        await _fetchLock.WaitAsync(cancellationToken);
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             _navigationPending = true;
+            _readyDocumentNavigationId = null;
             Browser.CoreWebView2.Navigate(_siteBaseUrl);
-            var reused = await WaitForClearanceAsync(SessionReuseMaxWait, CancellationToken.None);
+            var reused = await WaitForClearanceAsync(SessionReuseMaxWait, cancellationToken);
             if (reused)
             {
                 FinishButton.IsEnabled = true;
@@ -108,7 +111,7 @@ public partial class CloudflareWindow
                 return false;
             }
 
-            if (await TryRefreshReadySessionAsync())
+            if (await TryRefreshReadySessionAsync(cancellationToken))
             {
                 return true;
             }
@@ -124,23 +127,61 @@ public partial class CloudflareWindow
 
     private bool HasValidClearance() => _cookieBridge.HasValidClearance(Cookies);
 
-    private async Task<bool> TryRefreshReadySessionAsync()
+    /// <summary>只检查浏览器现有 Cookie，不导航、不发送探测请求。</summary>
+    public async Task<bool> HasValidSessionCookiesAsync(CancellationToken cancellationToken = default)
     {
-        if (_navigationPending || !IsCurrentPageOnSite()) return false;
+        await EnsureInitializedAsync().WaitAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (Browser.CoreWebView2 is null) return false;
+        IsCurrentPageOnSite();
+        var cookies = await _cookieBridge.ExportCookiesAsync(Browser.CoreWebView2.CookieManager).WaitAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        Cookies = cookies;
+        CookieHeader = _cookieBridge.BuildCookieHeader(cookies);
+        return HasValidClearance();
+    }
+
+    private async Task<bool> TryRefreshReadySessionAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var navigationId = _navigationId;
+        // 先捕获 Cookie。图片、广告仍在加载时，也不能把已拿到的 Cookie 显示为未捕获。
+        var hasCookies = await HasValidSessionCookiesAsync(cancellationToken);
+        _sessionReadinessMessage = hasCookies
+            ? "已捕获有效的验证 Cookie，正在等待当前页面准备好。"
+            : "尚未捕获当前站点的有效验证 Cookie，请完成页面验证。";
+        if (navigationId != _navigationId || _readyDocumentNavigationId != navigationId || !IsCurrentPageOnSite()) return false;
         var payload = await Browser.CoreWebView2.ExecuteScriptAsync(
-            "JSON.stringify({ html: document.documentElement?.outerHTML ?? '', title: document.title, ready: document.readyState, href: location.href })");
+            "JSON.stringify({ html: document.documentElement?.outerHTML ?? '', title: document.title, ready: document.readyState, href: location.href, status: performance.getEntriesByType('navigation')[0]?.responseStatus ?? 0 })").WaitAsync(cancellationToken);
         var state = DeserializeScriptResult<PageState>(payload);
-        if (_navigationPending || state is null || state.Ready is not ("interactive" or "complete") ||
+        if (navigationId != _navigationId || _readyDocumentNavigationId != navigationId || state is null ||
+            state.Ready is not ("interactive" or "complete") ||
             !Uri.TryCreate(state.Href, UriKind.Absolute, out var pageUri) ||
-            pageUri.GetLeftPart(UriPartial.Authority) != SessionBaseUri.GetLeftPart(UriPartial.Authority) ||
-            CloudflareDetection.IsChallengePage(state.Html ?? string.Empty, state.Title))
+            pageUri.GetLeftPart(UriPartial.Authority) != SessionBaseUri.GetLeftPart(UriPartial.Authority)) return false;
+        if (CloudflareDetection.IsChallengePage(state.Html ?? string.Empty, state.Title))
         {
+            _sessionReadinessMessage = "当前页面仍在进行 Cloudflare 验证，请完成页面中的验证。";
             return false;
         }
-
-        Cookies = await _cookieBridge.ExportCookiesAsync(Browser.CoreWebView2.CookieManager);
-        CookieHeader = _cookieBridge.BuildCookieHeader(Cookies);
-        return !_navigationPending && HasValidClearance();
+        // DOM 就绪时读取当前文档的响应状态，不能因图片未完成而忽略 403。
+        var status = _navigationPending ? state.Status : _navigationStatusCode;
+        if (status >= 400)
+        {
+            _sessionReadinessMessage = hasCookies
+                ? $"已捕获验证 Cookie，但当前页面仍返回 HTTP {status}，请重试页面验证。"
+                : $"当前页面返回 HTTP {status}，尚未捕获有效验证 Cookie。";
+            return false;
+        }
+        if (status is < 200 or >= 300)
+        {
+            _sessionReadinessMessage = hasCookies
+                ? "已捕获验证 Cookie，正在确认当前页面的响应状态。"
+                : "正在确认当前页面和验证 Cookie。";
+            return false;
+        }
+        if (!hasCookies)
+            _sessionReadinessMessage = "页面已加载，尚未捕获当前站点的有效验证 Cookie，正在继续检查。";
+        return hasCookies;
     }
 
     /// <summary>
@@ -307,6 +348,7 @@ public partial class CloudflareWindow
         try
         {
             AppLogger.Info("http", $"WebView2 页面不在站点上，导航回首页恢复页内 fetch 上下文: {Browser.CoreWebView2.Source}");
+            _readyDocumentNavigationId = null;
             Browser.CoreWebView2.Navigate(_siteBaseUrl);
             var startedAt = DateTime.UtcNow;
             while (DateTime.UtcNow - startedAt < SessionReuseMaxWait)
