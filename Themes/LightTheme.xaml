@@ -11,20 +11,20 @@
     <SolidColorBrush x:Key="{x:Static SystemColors.GrayTextBrushKey}" Color="#6B7280"/>
     <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#EDF5FB"/>
     <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="#111827"/>
-    <SolidColorBrush x:Key="ThemeWindowBackgroundBrush" Color="#F6F6F6"/>
-    <SolidColorBrush x:Key="ThemeDialogBackgroundBrush" Color="#F7F7F7"/>
+    <SolidColorBrush x:Key="ThemeWindowBackgroundBrush" Color="#F4F6F8"/>
+    <SolidColorBrush x:Key="ThemeDialogBackgroundBrush" Color="#F7F8FA"/>
     <SolidColorBrush x:Key="ThemeSurfaceBrush" Color="#FFFFFF"/>
-    <SolidColorBrush x:Key="ThemeSurfaceAltBrush" Color="#FCFCFD"/>
-    <SolidColorBrush x:Key="ThemeSurfaceSubtleBrush" Color="#F8FAFC"/>
-    <SolidColorBrush x:Key="ThemeSurfaceFooterBrush" Color="#F3F3F3"/>
-    <SolidColorBrush x:Key="ThemeSurfaceHoverBrush" Color="#F8FBFE"/>
-    <SolidColorBrush x:Key="ThemeSummaryPanelBrush" Color="#FBFCFE"/>
-    <SolidColorBrush x:Key="ThemeSummaryPanelBorderBrush" Color="#DEE5ED"/>
-    <SolidColorBrush x:Key="ThemeBorderBrush" Color="#DCE4EE"/>
-    <SolidColorBrush x:Key="ThemeBorderStrongBrush" Color="#CBD5E1"/>
-    <SolidColorBrush x:Key="ThemeBorderChromeBrush" Color="#D7DDE5"/>
-    <SolidColorBrush x:Key="ThemeBorderSubtleBrush" Color="#E5EAF0"/>
-    <SolidColorBrush x:Key="ThemeBorderAltBrush" Color="#DDE3EA"/>
+    <SolidColorBrush x:Key="ThemeSurfaceAltBrush" Color="#FAFBFD"/>
+    <SolidColorBrush x:Key="ThemeSurfaceSubtleBrush" Color="#F5F7FA"/>
+    <SolidColorBrush x:Key="ThemeSurfaceFooterBrush" Color="#F0F3F6"/>
+    <SolidColorBrush x:Key="ThemeSurfaceHoverBrush" Color="#F0F5FC"/>
+    <SolidColorBrush x:Key="ThemeSummaryPanelBrush" Color="#F5F8FD"/>
+    <SolidColorBrush x:Key="ThemeSummaryPanelBorderBrush" Color="#D9E4F1"/>
+    <SolidColorBrush x:Key="ThemeBorderBrush" Color="#D9E1EB"/>
+    <SolidColorBrush x:Key="ThemeBorderStrongBrush" Color="#BCC9DA"/>
+    <SolidColorBrush x:Key="ThemeBorderChromeBrush" Color="#CBD5E3"/>
+    <SolidColorBrush x:Key="ThemeBorderSubtleBrush" Color="#E8EDF4"/>
+    <SolidColorBrush x:Key="ThemeBorderAltBrush" Color="#DFE6EF"/>
     <SolidColorBrush x:Key="ThemeTextPrimaryBrush" Color="#101828"/>
     <SolidColorBrush x:Key="ThemeTextBrush" Color="#111827"/>
     <SolidColorBrush x:Key="ThemeTextSecondaryBrush" Color="#475467"/>
@@ -37,12 +37,12 @@
     <SolidColorBrush x:Key="ThemeAccentPressedBrush" Color="#0958D9"/>
     <SolidColorBrush x:Key="ThemeAccentForegroundBrush" Color="#FFFFFF"/>
     <SolidColorBrush x:Key="ThemeButtonBackgroundBrush" Color="#FFFFFF"/>
-    <SolidColorBrush x:Key="ThemeButtonBorderBrush" Color="#C8D0DA"/>
+    <SolidColorBrush x:Key="ThemeButtonBorderBrush" Color="#C7D2E1"/>
     <SolidColorBrush x:Key="ThemeButtonForegroundBrush" Color="#344054"/>
-    <SolidColorBrush x:Key="ThemeButtonHoverBrush" Color="#F8FAFC"/>
-    <SolidColorBrush x:Key="ThemeButtonPressedBrush" Color="#EEF2F6"/>
+    <SolidColorBrush x:Key="ThemeButtonHoverBrush" Color="#EFF4FB"/>
+    <SolidColorBrush x:Key="ThemeButtonPressedBrush" Color="#E3ECF9"/>
     <SolidColorBrush x:Key="ThemeInputBackgroundBrush" Color="#FFFFFF"/>
-    <SolidColorBrush x:Key="ThemeInputBorderBrush" Color="#CBD5E1"/>
+    <SolidColorBrush x:Key="ThemeInputBorderBrush" Color="#C7D2E1"/>
     <SolidColorBrush x:Key="ThemeInputForegroundBrush" Color="#111827"/>
     <SolidColorBrush x:Key="ThemeSelectionBrush" Color="#E8F3FF"/>
     <SolidColorBrush x:Key="ThemeSelectionBorderBrush" Color="#1677FF"/>

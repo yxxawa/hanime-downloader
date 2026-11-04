@@ -13,7 +13,70 @@
             <Setter Property="Background" Value="{DynamicResource ThemeSurfaceBrush}"/>
             <Setter Property="BorderBrush" Value="{DynamicResource ThemeBorderBrush}"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="CornerRadius" Value="6"/>
+        </Style>
+
+        <Style x:Key="DownloadProgressBarStyle" TargetType="ProgressBar">
+            <Setter Property="Foreground" Value="{DynamicResource ThemeAccentBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource ThemeBorderSubtleBrush}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ProgressBar">
+                        <Grid x:Name="PART_Track" ClipToBounds="True">
+                            <Border Background="{TemplateBinding Background}" CornerRadius="2"/>
+                            <Border x:Name="PART_Indicator"
+                                    HorizontalAlignment="Left"
+                                    Background="{TemplateBinding Foreground}"
+                                    CornerRadius="2"/>
+                            <Border x:Name="IndeterminateIndicator"
+                                    Background="{TemplateBinding Foreground}"
+                                    CornerRadius="2"
+                                    Visibility="Collapsed">
+                                <Border.OpacityMask>
+                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                        <LinearGradientBrush.RelativeTransform>
+                                            <TranslateTransform X="-0.8"/>
+                                        </LinearGradientBrush.RelativeTransform>
+                                        <GradientStop Color="Transparent" Offset="0.25"/>
+                                        <GradientStop Color="Black" Offset="0.4"/>
+                                        <GradientStop Color="Black" Offset="0.6"/>
+                                        <GradientStop Color="Transparent" Offset="0.75"/>
+                                    </LinearGradientBrush>
+                                </Border.OpacityMask>
+                            </Border>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsIndeterminate" Value="True"/>
+                                    <Condition Property="IsVisible" Value="True"/>
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="PART_Indicator" Property="Visibility" Value="Collapsed"/>
+                                <Setter TargetName="IndeterminateIndicator" Property="Visibility" Value="Visible"/>
+                                <MultiTrigger.EnterActions>
+                                    <BeginStoryboard x:Name="IndeterminateAnimation">
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="IndeterminateIndicator"
+                                                             Storyboard.TargetProperty="(UIElement.OpacityMask).(Brush.RelativeTransform).(TranslateTransform.X)"
+                                                             From="-0.8" To="0.8"
+                                                             Duration="0:0:1.6"
+                                                             RepeatBehavior="Forever"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </MultiTrigger.EnterActions>
+                                <MultiTrigger.ExitActions>
+                                    <RemoveStoryboard BeginStoryboardName="IndeterminateAnimation"/>
+                                </MultiTrigger.ExitActions>
+                            </MultiTrigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="PART_Track" Property="Opacity" Value="0.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <Style x:Key="PanelHeaderTextStyle" TargetType="TextBlock">
@@ -38,9 +101,15 @@
                         <Border Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="2">
+                                CornerRadius="4">
                             <ContentPresenter HorizontalAlignment="Center"
-                                              VerticalAlignment="Center"/>
+                                              VerticalAlignment="Center">
+                                <ContentPresenter.Resources>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                                    </Style>
+                                </ContentPresenter.Resources>
+                            </ContentPresenter>
                         </Border>
                     </ControlTemplate>
                 </Setter.Value>
@@ -109,7 +178,7 @@
                                     Background="{DynamicResource ThemeSurfaceAltBrush}"
                                     BorderBrush="{TemplateBinding BorderBrush}"
                                     BorderThickness="{TemplateBinding BorderThickness}"
-                                    CornerRadius="2"
+                                    CornerRadius="4"
                                     Padding="{TemplateBinding Padding}">
                                 <ContentPresenter/>
                             </Border>
@@ -148,7 +217,7 @@
                                 Background="{DynamicResource ThemeSurfaceSubtleBrush}"
                                 BorderBrush="{DynamicResource ThemeBorderChromeBrush}"
                                 BorderThickness="1"
-                                CornerRadius="2,2,0,0">
+                                CornerRadius="4,4,0,0">
                             <ContentPresenter ContentSource="Header"
                                               HorizontalAlignment="Center"
                                               VerticalAlignment="Center"/>
@@ -279,7 +348,7 @@
                             Background="{DynamicResource ThemeButtonBackgroundBrush}"
                             BorderBrush="{DynamicResource ThemeInputBorderBrush}"
                             BorderThickness="1"
-                            CornerRadius="2">
+                            CornerRadius="4">
                         <TextBox x:Name="SearchBox"
                                  Height="26"
                                  FontSize="11"
@@ -303,7 +372,7 @@
                                 Background="{DynamicResource ThemeSurfaceBrush}"
                                 BorderBrush="{DynamicResource ThemeBorderBrush}"
                                 BorderThickness="1"
-                                CornerRadius="2">
+                                CornerRadius="4">
                             <ListBox x:Name="SearchHistoryList"
                                      MaxHeight="256"
                                      BorderThickness="0"
@@ -361,7 +430,7 @@
                         Background="{DynamicResource ThemeSummaryPanelBrush}"
                         BorderBrush="{DynamicResource ThemeSummaryPanelBorderBrush}"
                         BorderThickness="1"
-                        CornerRadius="2"
+                        CornerRadius="4"
                         Visibility="Collapsed">
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -455,7 +524,7 @@
                                     <ListBox.ItemTemplate>
                                         <DataTemplate>
                                             <Border Padding="3,1"
-                                                    Background="{DynamicResource ThemeSurfaceBrush}"
+                                                    Background="Transparent"
                                                     BorderBrush="{DynamicResource ThemeBorderSubtleBrush}"
                                                     BorderThickness="0,0,0,1">
                                                 <DockPanel LastChildFill="True">
@@ -467,7 +536,7 @@
                                                             Background="{DynamicResource ThemeCoverPlaceholderBrush}"
                                                             BorderBrush="{DynamicResource ThemeCoverPlaceholderBorderBrush}"
                                                             BorderThickness="1"
-                                                            CornerRadius="2"
+                                                            CornerRadius="4"
                                                             Visibility="{Binding DataContext.ShowListCoversVisibility, RelativeSource={RelativeSource AncestorType=Window}}">
                                                         <Image Source="{Binding CoverImage}" Stretch="UniformToFill"/>
                                                     </Border>
@@ -669,7 +738,7 @@
                                     <ListBox.ItemTemplate>
                                         <DataTemplate>
                                             <Border Padding="3,1"
-                                                    Background="{DynamicResource ThemeSurfaceBrush}"
+                                                    Background="Transparent"
                                                     BorderBrush="{DynamicResource ThemeBorderSubtleBrush}"
                                                     BorderThickness="0,0,0,1">
                                                 <DockPanel LastChildFill="True">
@@ -680,7 +749,7 @@
                                                             Background="{DynamicResource ThemeCoverPlaceholderBrush}"
                                                             BorderBrush="{DynamicResource ThemeCoverPlaceholderBorderBrush}"
                                                             BorderThickness="1"
-                                                            CornerRadius="2"
+                                                            CornerRadius="4"
                                                             Visibility="{Binding DataContext.ShowListCoversVisibility, RelativeSource={RelativeSource AncestorType=Window}}">
                                                         <Image Source="{Binding CoverImage}" Stretch="UniformToFill"/>
                                                     </Border>
@@ -770,7 +839,7 @@
                                                         <Border DockPanel.Dock="Right"
                                                                 Padding="4,1"
                                                                 Margin="6,0,0,0"
-                                                                CornerRadius="2">
+                                                                CornerRadius="4">
                                                             <Border.Style>
                                                                 <Style TargetType="Border">
                                                                     <Setter Property="Background" Value="{DynamicResource ThemeSuccessSoftBrush}"/>
@@ -878,7 +947,7 @@
                             Background="{DynamicResource ThemeSurfaceAltBrush}"
                             BorderBrush="{DynamicResource ThemeBorderAltBrush}"
                             BorderThickness="1"
-                            CornerRadius="2">
+                            CornerRadius="4">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="62"/>
@@ -1007,7 +1076,7 @@
                                 <ListBox.ItemTemplate>
                                     <DataTemplate>
                                         <Border Padding="3,1"
-                                                Background="{DynamicResource ThemeSurfaceBrush}"
+                                                Background="Transparent"
                                                 BorderBrush="{DynamicResource ThemeBorderSubtleBrush}"
                                                 BorderThickness="0,0,0,1">
                                             <DockPanel LastChildFill="True">
@@ -1018,7 +1087,7 @@
                                                         Background="{DynamicResource ThemeCoverPlaceholderBrush}"
                                                         BorderBrush="{DynamicResource ThemeCoverPlaceholderBorderBrush}"
                                                         BorderThickness="1"
-                                                        CornerRadius="2"
+                                                        CornerRadius="4"
                                                         Visibility="{Binding DataContext.ShowListCoversVisibility, RelativeSource={RelativeSource AncestorType=Window}}">
                                                     <Image Source="{Binding CoverImage}" Stretch="UniformToFill"/>
                                                 </Border>
@@ -1087,7 +1156,7 @@
                                 <ListBox.ItemTemplate>
                                     <DataTemplate>
                                         <Border Padding="3,1"
-                                                Background="{DynamicResource ThemeSurfaceBrush}"
+                                                Background="Transparent"
                                                 BorderBrush="{DynamicResource ThemeBorderSubtleBrush}"
                                                 BorderThickness="0,0,0,1">
                                             <Grid>
@@ -1158,7 +1227,7 @@
                             Background="{DynamicResource ThemeSurfaceAltBrush}"
                             BorderBrush="{DynamicResource ThemeBorderAltBrush}"
                             BorderThickness="1"
-                            CornerRadius="2">
+                            CornerRadius="4">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="32"/>
@@ -1240,6 +1309,7 @@
                                    ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"
                                    Visibility="Collapsed"/>
                         <ProgressBar x:Name="QueueOverallProgressBar"
+                                     Style="{StaticResource DownloadProgressBarStyle}"
                                      Height="4"
                                      Margin="0,3,0,0"
                                      Minimum="0"
@@ -1268,7 +1338,7 @@
                                         BorderThickness="0,0,0,1">
                                     <Border.Style>
                                         <Style TargetType="Border">
-                                            <Setter Property="Background" Value="{DynamicResource ThemeSurfaceBrush}"/>
+                                            <Setter Property="Background" Value="Transparent"/>
                                             <Style.Triggers>
                                                 <DataTrigger Binding="{Binding IsDownloading}" Value="True">
                                                     <Setter Property="Background" Value="{DynamicResource ThemeSuccessBrush}"/>
@@ -1294,7 +1364,7 @@
                                                     Background="{DynamicResource ThemeBadgeInfoBrush}"
                                                     BorderBrush="{DynamicResource ThemeBadgeInfoBorderBrush}"
                                                     BorderThickness="1"
-                                                    CornerRadius="2">
+                                                    CornerRadius="4">
                                                 <TextBlock Text="{Binding StageText}"
                                                            Foreground="{DynamicResource ThemeBadgeInfoTextBrush}"
                                                            FontSize="10"/>
@@ -1315,7 +1385,7 @@
                                                     Background="{DynamicResource ThemeButtonPressedBrush}"
                                                     BorderBrush="{DynamicResource ThemeBadgeNeutralBorderBrush}"
                                                     BorderThickness="1"
-                                                    CornerRadius="2">
+                                                    CornerRadius="4">
                                                 <TextBlock Text="{Binding TypeText}"
                                                            Foreground="{DynamicResource ThemeTextNeutralBrush}"
                                                            FontSize="10"/>
@@ -1325,7 +1395,7 @@
                                                     Background="{DynamicResource ThemeButtonPressedBrush}"
                                                     BorderBrush="{DynamicResource ThemeBadgeNeutralBorderBrush}"
                                                     BorderThickness="1"
-                                                    CornerRadius="2">
+                                                    CornerRadius="4">
                                                 <TextBlock Text="{Binding QualityText}"
                                                            Foreground="{DynamicResource ThemeTextNeutralBrush}"
                                                            FontSize="10"/>
@@ -1348,7 +1418,7 @@
                                                      HorizontalAlignment="Stretch"
                                                      Value="{Binding ProgressValue, TargetNullValue=0}">
                                             <ProgressBar.Style>
-                                                <Style TargetType="ProgressBar">
+                                                <Style TargetType="ProgressBar" BasedOn="{StaticResource DownloadProgressBarStyle}">
                                                     <Setter Property="Visibility" Value="Collapsed"/>
                                                     <Setter Property="IsIndeterminate" Value="False"/>
                                                     <Style.Triggers>
