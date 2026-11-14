@@ -251,10 +251,13 @@ public sealed class HanimeAccountService
             throw new CloudflareChallengeException("当前站点没有有效的验证 Cookie，请先完成 Cloudflare 验证。", new Uri(_siteBaseUri, relativeUrl).AbsoluteUri);
         }
 
+        var targetUrl = new Uri(_siteBaseUri, relativeUrl).AbsoluteUri;
         BrowserFetchResult? blockedResponse = null;
         var inPage = await _browserWindow.TryFetchHtmlInPageAsync(relativeUrl, cancellationToken);
         if (inPage is not null)
         {
+            if (inPage.Challenge is { } challenge)
+                throw CloudflareDetection.ConfirmedChallenge(targetUrl, challenge);
             if (!CloudflareDetection.IsBlockedResponse(inPage))
             {
                 return inPage;
@@ -270,6 +273,8 @@ public sealed class HanimeAccountService
                 inPage = await _browserWindow.TryFetchHtmlInPageAsync(relativeUrl, cancellationToken);
                 if (inPage is not null)
                 {
+                    if (inPage.Challenge is { } challenge)
+                        throw CloudflareDetection.ConfirmedChallenge(targetUrl, challenge);
                     if (!CloudflareDetection.IsBlockedResponse(inPage))
                     {
                         return inPage;
@@ -283,7 +288,7 @@ public sealed class HanimeAccountService
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not CloudflareChallengeException)
         {
             AppLogger.Info("http", $"账号页面上下文恢复失败: {relativeUrl} {ex.Message}");
         }
@@ -302,6 +307,8 @@ public sealed class HanimeAccountService
 
     private static BrowserFetchResult ValidateHtml(BrowserFetchResult response)
     {
+        if (response.Challenge is { } challenge)
+            throw CloudflareDetection.ConfirmedChallenge(response.Url, challenge);
         if (CloudflareDetection.IsBlockedResponse(response))
         {
             throw new CloudflareChallengeException("请求返回 HTTP 403 或 Cloudflare 挑战页，请先完成站点验证后重试。", response.Url);

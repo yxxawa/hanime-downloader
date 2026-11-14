@@ -4,7 +4,7 @@ namespace Hanime1Downloader.CSharp.Services;
 public sealed class VerificationRequestSet
 {
     private readonly object _gate = new();
-    private readonly HashSet<string> _requests = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _requests = new(StringComparer.Ordinal);
     private long _version;
     private long _confirmedVersion = -1;
 
@@ -22,7 +22,20 @@ public sealed class VerificationRequestSet
     {
         lock (_gate)
         {
-            if (_requests.Add(requestUrl ?? string.Empty)) _version++;
+            var key = requestUrl ?? string.Empty;
+            if (_requests.TryGetValue(key, out var count)) _requests[key] = count + 1;
+            else { _requests.Add(key, 1); _version++; }
+        }
+    }
+
+    public void Remove(string? requestUrl)
+    {
+        lock (_gate)
+        {
+            var key = requestUrl ?? string.Empty;
+            if (!_requests.TryGetValue(key, out var count)) return;
+            if (count > 1) _requests[key] = count - 1;
+            else { _requests.Remove(key); _version++; }
         }
     }
 
@@ -30,7 +43,7 @@ public sealed class VerificationRequestSet
     {
         string[] requests;
         long version;
-        lock (_gate) { requests = _requests.ToArray(); version = _version; _confirmedVersion = -1; }
+        lock (_gate) { requests = _requests.Keys.ToArray(); version = _version; _confirmedVersion = -1; }
         if (requests.Length == 0) return false;
         foreach (var request in requests)
         {

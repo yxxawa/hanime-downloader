@@ -42,6 +42,7 @@ internal static partial class Program
         Check(crowdedSession.BuildCookieHeader(crowdedCookies).Contains("cf_clearance="), "HTTP Cookie header preserves clearance in a crowded browser session");
         await CheckFirstRequestAsync();
         await CheckChallengeRecoveryAsync();
+        await CheckChallengeFastPathAsync();
         var session = new SiteSessionContext("hanime1.com");
         Check(session.BaseUri.Host == "hanime1.com", "configured host initializes request origin");
         foreach (var url in new[] { "https://hanime1.me/", "https://www.hanime1.me/search?q=x", "https://www.hanime1.com/", "https://hanime1.com/" })
@@ -193,6 +194,13 @@ internal static partial class Program
         pending.Add("search?query=a"); pending.Add("search?query=a");
         Check(await pending.ConfirmAsync((url, ct) => { calls.Add(url); return Task.FromResult(true); }, CancellationToken.None) && calls.Count == 1,
             "identical concurrent failures share one probe");
+        pending.Remove("search?query=a");
+        Check(pending.IsConfirmed, "canceling one duplicate waiter keeps the other request confirmed");
+        var canceledOnly = new VerificationRequestSet();
+        canceledOnly.Add("search?query=only");
+        canceledOnly.Remove("search?query=only");
+        Check(!await canceledOnly.ConfirmAsync((url, ct) => Task.FromResult(true), CancellationToken.None),
+            "a canceled last waiter does not leave a stale request in the probe set");
         Check(pending.IsConfirmed, "confirmation remains current until new failure arrives");
         pending.Add("download?v=1");
         Check(!pending.IsConfirmed, "late failure invalidates confirmation before window closes");

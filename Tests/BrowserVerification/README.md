@@ -12,7 +12,7 @@ application does not lock the test build. A unique reserved `.invalid` host isol
 storage from user sessions. Every resource request is intercepted with synthetic HTML; no
 real-site requests, credentials, or CAPTCHA actions are involved.
 
-The current **25 checks** passed on 2026-11-01. They cover missing and expired Cookies, first-request
+The original verification checks cover missing and expired Cookies, first-request
 escalation without network retries, cancellation of startup reuse, the real WPF finish-button
 click while an automatic probe is pending, Cookie export, cancellation of that probe, a probe
 that ignores cancellation, stale results, a visible challenge, cancellation, and automatic
@@ -27,6 +27,13 @@ untrusted target, ordinary 403 and 403 with a pending image. Both 403 cases rema
 are reported separately from missing Cookies. The image and document requests are held with
 WebView2 deferrals, so the tests exercise real browser event ordering instead of assigning
 production readiness fields.
+
+The challenge fast-path checks add a real response with `cf-mitigated: challenge` at HTTP 200,
+a browser `ReadableStream` whose body does not complete, and a pending verification document.
+They assert that search detects the challenge without reading the body, the popup reaches a WPF
+render tick before that document is released, and business navigation reports a DOM challenge
+while an image is still pending. Healthy slow-image pages, plain 403, and superseded navigations
+serve as negative controls.
 
 Manual completion validates the current page and applicable Cookie only, then lets the actual
 operation retry. It intentionally does not wait for all automatic endpoint probes. Automatic

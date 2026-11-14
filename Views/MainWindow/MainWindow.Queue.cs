@@ -124,33 +124,40 @@ public partial class MainWindow
         QueueVideoSource(source);
     }
 
+    private const VideoDetailsLoadOptions QueueDetailsOptions =
+        VideoDetailsLoadOptions.Basic | VideoDetailsLoadOptions.Meta | VideoDetailsLoadOptions.Sources;
+
     private async void QueueVideoSource(VideoSource source, bool startImmediately = false)
     {
         try
         {
-            var title = _currentDetails?.Title ?? GetSelectedVideoSummary()?.Title ?? "未命名视频";
-            var videoId = _currentDetailsVideoId ?? string.Empty;
-            if (!string.IsNullOrWhiteSpace(videoId) && HasQueueItem(videoId, source.Quality))
+            var current = _currentDetails;
+            if (current is null || string.IsNullOrWhiteSpace(current.VideoId) || !current.Sources.Contains(source))
+            {
+                StatusText.Text = "请先选择已加载详情的视频源。";
+                return;
+            }
+            var videoId = current.VideoId;
+            if (HasQueueItem(videoId, source.Quality))
             {
                 StatusText.Text = "该视频源已经在下载队列中。";
                 return;
             }
 
-            var queueItem = new DownloadQueueItem
+            var siteHost = _settings.SiteHost;
+            var rule = _settings.FileNamingRule;
+            var namingTime = DateTime.Now;
+            var details = current.LoadOptions.HasFlag(VideoDetailsLoadOptions.Meta)
+                ? current
+                : await LoadQueueEnqueueDetailsAsync(videoId, siteHost);
+            if (!CanEnqueueForSite(siteHost)) return;
+            if (details is null || string.IsNullOrWhiteSpace(details.Title))
             {
-                Title = title,
-                Url = source.Url,
-                Type = source.Type,
-                Quality = source.Quality,
-                VideoId = videoId,
-                NamingRule = _settings.FileNamingRule,
-                NamingTime = DateTime.Now,
-                UploadDate = _currentDetails?.UploadDate,
-                StageText = "等待",
-                QueueStatusText = "等待中"
-            };
-
-            queueItem.TargetPath = CreateQueueTargetPath(queueItem);
+                StatusText.Text = "未读取到视频详情，未加入下载队列。";
+                return;
+            }
+            if (HasQueueItem(videoId, source.Quality)) return;
+            var queueItem = CreateQueueItem(details, source, rule, namingTime);
 
             if (_isDownloadingQueue)
             {
@@ -199,9 +206,7 @@ public partial class MainWindow
         {
             if (_isDownloadingQueue)
             {
-                _isPauseRequested = true;
-                _downloadQueueCancellationTokenSource?.Cancel();
-                StatusText.Text = "正在暂停下载队列...";
+                RequestQueuePause();
                 return;
             }
 
@@ -236,138 +241,58 @@ public partial class MainWindow
 
     private void DownloadQueueList_OnMouseRightButtonUp(object sender, MouseButtonEventArgs e)
     {
-        var selectedQueueItems = DownloadQueueList.SelectedItems.Cast<DownloadQueueItem>().ToList();
-        if (selectedQueueItems.Count == 0)
-        {
-            return;
-        }
+        if (GetListBoxItemAt(DownloadQueueList, e.GetPosition(DownloadQueueList))?.DataContext is not DownloadQueueItem) return;
+        var items = DownloadQueueList.SelectedItems.OfType<DownloadQueueItem>().ToList();
+        if (items.Count == 0) return;
+        ShowListContextMenu(BuildQueueContextMenu(items), DownloadQueueList);
+    }
 
-        var selectedIndexes = selectedQueueItems
-            .Select(item => _downloadQueue.IndexOf(item))
-            .Where(index => index >= 0)
-            .OrderBy(index => index)
-            .ToList();
-        var canMoveUp = selectedIndexes.Count > 0 && selectedIndexes.First() > 0;
-        var canMoveDown = selectedIndexes.Count > 0 && selectedIndexes.Last() < _downloadQueue.Count - 1;
-
+    private ContextMenu BuildQueueContextMenu(IReadOnlyList<DownloadQueueItem> items)
+    {
         var menu = new ContextMenu();
-        var startItem = new MenuItem { Header = _isDownloadingQueue ? "暂停下载队列" : (_hasPausedQueue ? "继续选中项" : "开始选中项") };
-        startItem.Click += async (_, _) =>
-        {
-            try
-            {
-                if (_isDownloadingQueue)
-                {
-                    _isPauseRequested = true;
-                    _downloadQueueCancellationTokenSource?.Cancel();
-                    StatusText.Text = "正在暂停下载队列...";
-                    return;
-                }
-
-                await StartSelectedQueueItemsAsync(selectedQueueItems);
-            }
-            catch (Exception ex)
-            {
-                HandleUiActionError("queue", "启动选中下载项失败", ex);
-            }
-        };
-        menu.Items.Add(startItem);
-        var namingItem = new MenuItem
-        {
-            Header = "自定义命名...",
-            IsEnabled = !_isDownloadingQueue && selectedQueueItems.All(CanChangeQueueNaming)
-        };
-        namingItem.Click += async (_, _) =>
-        {
-            try { await CustomizeQueueNamingAsync(selectedQueueItems); }
-            catch (Exception ex) { HandleUiActionError("queue", "修改命名失败", ex); }
-        };
-        menu.Items.Add(namingItem);
-
-        if (selectedQueueItems.Any(item => item.QueueState == DownloadQueueState.Error))
-        {
-            var reResolveItem = new MenuItem { Header = "重新解析选中失败项" };
-            reResolveItem.Click += async (_, _) =>
-            {
-                try
-                {
-                    var items = selectedQueueItems.Where(item => item.QueueState == DownloadQueueState.Error).ToList();
-                    await ReResolveQueueItemsAsync(items);
-                }
-                catch (Exception ex)
-                {
-                    HandleUiActionError("queue", "重新解析失败", ex);
-                }
-            };
-            menu.Items.Add(reResolveItem);
-        }
-
+        var hasFailures = items.Any(item => item.QueueState == DownloadQueueState.Error);
+        var canStart = items.Any(CanStartQueueItem);
         if (!_isDownloadingQueue)
         {
-            var moveUpItem = new MenuItem { Header = "上移", IsEnabled = canMoveUp };
-            moveUpItem.Click += async (_, _) =>
+            if (canStart || hasFailures)
             {
-                try
-                {
-                    await MoveQueueItemsAsync(selectedQueueItems, indexes => indexes.Select(index => index - 1).ToList(), "已上移选中项。");
-                }
-                catch (Exception ex)
-                {
-                    HandleUiActionError("queue", "上移队列项失败", ex);
-                }
-            };
-            menu.Items.Add(moveUpItem);
+                var header = hasFailures ? (canStart ? "下载 / 重试所选项" : "重新解析并重试")
+                    : items.All(item => item.QueueState == DownloadQueueState.Paused) ? "继续所选项" : "开始所选项";
+                menu.Items.Add(CreateAsyncMenuAction(header, "queue", "处理所选下载项失败", () => StartSelectedQueueItemsAsync(items)));
+            }
 
-            var moveDownItem = new MenuItem { Header = "下移", IsEnabled = canMoveDown };
-            moveDownItem.Click += async (_, _) =>
-            {
-                try
-                {
-                    await MoveQueueItemsAsync(selectedQueueItems, indexes => indexes.Select(index => index + 1).ToList(), "已下移选中项。");
-                }
-                catch (Exception ex)
-                {
-                    HandleUiActionError("queue", "下移队列项失败", ex);
-                }
-            };
-            menu.Items.Add(moveDownItem);
+            if (items.All(CanChangeQueueNaming))
+                menu.Items.Add(CreateAsyncMenuAction("修改命名规则…", "queue", "修改命名失败", () => CustomizeQueueNamingAsync(items)));
 
-            var moveTopItem = new MenuItem { Header = "置顶", IsEnabled = canMoveUp };
-            moveTopItem.Click += async (_, _) =>
+            var indexes = items.Select(item => _downloadQueue.IndexOf(item)).Where(index => index >= 0).Order().ToList();
+            var reorder = new MenuItem { Header = "调整顺序" };
+            var distinctMoves = new List<List<int>>();
+            void AddMove(string header, string success, Func<List<int>, List<int>> transform)
             {
-                try
-                {
-                    await MoveQueueItemsAsync(selectedQueueItems, indexes => Enumerable.Range(0, indexes.Count).ToList(), "已将选中项置顶。");
-                }
-                catch (Exception ex)
-                {
-                    HandleUiActionError("queue", "置顶队列项失败", ex);
-                }
-            };
-            menu.Items.Add(moveTopItem);
-
-            var moveBottomItem = new MenuItem { Header = "置底", IsEnabled = canMoveDown };
-            moveBottomItem.Click += async (_, _) =>
-            {
-                try
-                {
-                    await MoveQueueItemsAsync(selectedQueueItems, indexes => Enumerable.Range(_downloadQueue.Count - indexes.Count, indexes.Count).ToList(), "已将选中项置底。");
-                }
-                catch (Exception ex)
-                {
-                    HandleUiActionError("queue", "置底队列项失败", ex);
-                }
-            };
-            menu.Items.Add(moveBottomItem);
+                var target = transform(indexes);
+                if (target.Any(index => index < 0 || index >= _downloadQueue.Count) || target.SequenceEqual(indexes) ||
+                    distinctMoves.Any(move => move.SequenceEqual(target))) return;
+                distinctMoves.Add(target);
+                reorder.Items.Add(CreateAsyncMenuAction(header, "queue", "调整队列顺序失败",
+                    () => MoveQueueItemsAsync(items, transform, success)));
+            }
+            AddMove("上移一位", "已上移选中项。", values => values.Select(index => index - 1).ToList());
+            AddMove("移到队首", "已将选中项置顶。", values => Enumerable.Range(0, values.Count).ToList());
+            AddMove("下移一位", "已下移选中项。", values => values.Select(index => index + 1).ToList());
+            AddMove("移到队尾", "已将选中项置底。", values => Enumerable.Range(_downloadQueue.Count - values.Count, values.Count).ToList());
+            if (reorder.Items.Count > 0) menu.Items.Add(reorder);
+        }
+        else if (CanRetryFailedQueueItems && hasFailures)
+        {
+            menu.Items.Add(CreateAsyncMenuAction("将失败项加入本轮重试", "queue", "重新解析失败",
+                () => ReResolveQueueItemsAsync(items)));
         }
 
-        var removeItem = new MenuItem { Header = "移除选中项" };
-        removeItem.Click += (_, _) => RemoveSelectedQueueItems(selectedQueueItems);
-        menu.Items.Add(removeItem);
-
-        menu.PlacementTarget = DownloadQueueList;
-        menu.Placement = PlacementMode.MousePoint;
-        menu.IsOpen = true;
+        // 全队列的暂停由工具栏负责；右键只影响所选项。
+        if (menu.Items.Count > 0) menu.Items.Add(new Separator());
+        var removeHeader = items.Any(item => item.IsDownloading) ? "停止并移出队列" : "移出队列";
+        menu.Items.Add(CreateMenuAction(removeHeader, () => RemoveSelectedQueueItems(items)));
+        return menu;
     }
 
     private async void ReResolveFailedQueueItemsButton_OnClick(object sender, RoutedEventArgs e)
@@ -389,32 +314,40 @@ public partial class MainWindow
         }
     }
 
+    private bool CanRetryFailedQueueItems => !_isDownloadingQueue || (!_queueRunSelectionOnly && !_isPauseRequested);
+
     private async Task ReResolveQueueItemsAsync(IReadOnlyList<DownloadQueueItem> items)
     {
-        if (items.Count == 0)
+        if (!CanRetryFailedQueueItems)
         {
+            StatusText.Text = "请等待本轮选中项下载或暂停结束后再重试。";
             return;
         }
-
-        foreach (var item in items)
-        {
-            item.HasError = false;
-            item.IsDownloading = false;
-            SetQueueItemVisualState(item, DownloadQueueState.Waiting, "等待", "重新解析中");
-            _reResolveItems.Add(item);
-        }
-
-        UpdateDownloadQueueControlUi();
+        var failed = items.Where(item => _downloadQueue.Contains(item) && item.QueueState == DownloadQueueState.Error).Distinct().ToList();
+        if (failed.Count == 0) return;
+        MarkQueueItemsForRetry(failed);
 
         if (_isDownloadingQueue)
         {
             NotifyDownloadQueueChanged();
-            StatusText.Text = items.Count == 1 ? "已将 1 个失败项加入重新解析。" : $"已将 {items.Count} 个失败项加入重新解析。";
+            StatusText.Text = $"已将 {failed.Count} 个失败项加入本轮重试。";
             return;
         }
 
-        StatusText.Text = items.Count == 1 ? "正在重新解析 1 个失败项..." : $"正在重新解析 {items.Count} 个失败项...";
-        await StartQueueDownloadAsync(items);
+        await StartQueueDownloadAsync(failed);
+    }
+
+    private void MarkQueueItemsForRetry(IReadOnlyList<DownloadQueueItem> failed)
+    {
+        if (failed.Count == 0) return;
+        foreach (var item in failed)
+        {
+            item.IsDownloading = false;
+            SetQueueItemVisualState(item, DownloadQueueState.Waiting, "等待", "待重新解析");
+            _reResolveItems.Add(item);
+        }
+        UpdateDownloadQueueControlUi();
+        ScheduleDownloadQueueSave();
     }
 
     private async void ClearQueueButton_OnClick(object sender, RoutedEventArgs e)
@@ -426,13 +359,14 @@ public partial class MainWindow
                 return;
             }
 
-            foreach (var item in _downloadQueue.ToList())
+            var removedItems = _downloadQueue.ToList();
+            _downloadQueue.Clear();
+            foreach (var item in removedItems)
             {
                 DeleteQueueItemTemporaryFile(item);
                 ClearQueueItemCancellationToken(item);
             }
 
-            _downloadQueue.Clear();
             ResetQueueRunSummaryState();
             if (!await TrySaveDownloadQueueAsync("queue", "保存下载队列失败"))
             {
@@ -494,35 +428,6 @@ public partial class MainWindow
         }
     }
 
-    private async Task SaveDownloadQueueAsync()
-    {
-        if (!_settings.PersistDownloadQueue)
-        {
-            if (File.Exists(DownloadQueueFilePath))
-            {
-                File.Delete(DownloadQueueFilePath);
-            }
-            return;
-        }
-
-        var items = _downloadQueue.Select(item => new DownloadQueueRecord
-        {
-            Title = item.Title,
-            Url = item.Url,
-            Type = item.Type,
-            Quality = item.Quality,
-            VideoId = item.VideoId,
-            TargetPath = item.TargetPath,
-            NamingRule = item.NamingRule,
-            NamingAuthor = item.NamingAuthor,
-            NamingDate = item.NamingDate,
-            UploadDate = item.UploadDate,
-            NamingTime = item.NamingTime,
-            HasError = item.HasError
-        }).ToList();
-        await AtomicFile.WriteAllTextAsync(DownloadQueueFilePath, JsonSerializer.Serialize(items, FavoritesJsonOptions));
-    }
-
     private async Task<bool> TrySaveDownloadQueueAsync(string category, string failureMessage)
     {
         try
@@ -539,47 +444,119 @@ public partial class MainWindow
 
     private async Task QueueVideosForDownloadAsync(IEnumerable<VideoSummary> videos, bool startImmediately = false)
     {
+        var selection = videos.Where(video => !string.IsNullOrWhiteSpace(video.VideoId))
+            .DistinctBy(video => video.VideoId, StringComparer.OrdinalIgnoreCase).ToList();
+        if (selection.Count == 0) return;
+
+        var siteHost = _settings.SiteHost;
+        var rule = _settings.FileNamingRule;
+        var namingTime = DateTime.Now;
+        var existingIds = _downloadQueue.Select(item => item.VideoId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var pending = selection.Where(video => !existingIds.Contains(video.VideoId)).ToList();
+        var loaded = new Dictionary<string, VideoDetails>(StringComparer.OrdinalIgnoreCase);
+        if (pending.Count > 0)
+        {
+            StatusText.Text = $"正在读取 {pending.Count} 个所选视频的详情…";
+            // 和详情面板共用详情缓存，分批获取，避免多选时同时发出大量请求。
+            foreach (var batch in pending.Chunk(3))
+            {
+                var results = await Task.WhenAll(batch.Select(video => LoadQueueEnqueueDetailsAsync(video.VideoId, siteHost)));
+                if (!CanEnqueueForSite(siteHost)) return;
+                foreach (var details in results.OfType<VideoDetails>()) loaded[details.VideoId] = details;
+            }
+        }
+
+        var selectedJobs = new List<DownloadQueueItem>();
         var added = 0;
         var alreadyInHistory = 0;
-        foreach (var video in videos)
+        var missedDetails = 0;
+        foreach (var video in selection)
         {
-            if (HasQueueItem(video.VideoId, 0))
+            // 详情等待期间，另一个入口可能已经添加了同一项。沿用已选的源，不重复排队。
+            var existing = _downloadQueue.Where(item => string.Equals(item.VideoId, video.VideoId, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (existing.Count > 0)
             {
+                if (startImmediately && existing.FirstOrDefault(CanStartQueueItem) is { } waiting) selectedJobs.Add(waiting);
                 continue;
             }
 
-            if (_historyVideoIds.Contains(video.VideoId))
+            if (!loaded.TryGetValue(video.VideoId, out var details) || string.IsNullOrWhiteSpace(details.Title))
             {
-                alreadyInHistory++;
+                missedDetails++;
+                continue;
             }
-
-            var queued = new DownloadQueueItem
-            {
-                Title = string.IsNullOrWhiteSpace(video.Title) ? video.VideoId : video.Title,
-                Url = video.Url,
-                Type = "mp4",
-                Quality = 0,
-                VideoId = video.VideoId,
-                NamingRule = _settings.FileNamingRule,
-                NamingTime = DateTime.Now,
-                StageText = "等待",
-                QueueStatusText = "等待中"
-            };
-            queued.TargetPath = CreateQueueTargetPath(queued);
+            if (_historyVideoIds.Contains(video.VideoId)) alreadyInHistory++;
+            var queued = CreateQueueItem(details, SelectSourceByQuality(details.Sources), rule, namingTime);
             _downloadQueue.Add(queued);
+            selectedJobs.Add(queued);
             added++;
         }
 
-        await TrySaveDownloadQueueAsync("queue", "保存下载队列失败");
-        UpdateDownloadQueueControlUi();
-        StatusText.Text = alreadyInHistory > 0
-            ? $"已加入下载队列 {added} 项（其中 {alreadyInHistory} 项已在下载历史中）。"
-            : $"已加入下载队列 {added} 项。";
-
-        if (startImmediately && _downloadQueue.Count > 0 && !_isDownloadingQueue)
+        var message = string.Empty;
+        if (added > 0)
         {
-            await StartQueueDownloadAsync();
+            var saved = await TrySaveDownloadQueueAsync("queue", "保存下载队列失败");
+            NotifyDownloadQueueChanged();
+            UpdateDownloadQueueControlUi();
+            message = !saved ? $"已加入下载队列 {added} 项，但保存失败。" : alreadyInHistory > 0
+                ? $"已加入下载队列 {added} 项（其中 {alreadyInHistory} 项已在下载历史中）。"
+                : $"已加入下载队列 {added} 项。";
         }
+        if (missedDetails > 0)
+            message += $"有 {missedDetails} 项未读取到完整详情，未加入队列，可重试。";
+        if (message.Length == 0 && selectedJobs.Count == 0)
+            message = startImmediately ? "所选视频没有可启动的队列项。失败项请在队列中重试。" : "所选视频已在下载队列中。";
+        if (message.Length > 0) StatusText.Text = message;
+
+        if (startImmediately && selectedJobs.Count > 0 && !_isDownloadingQueue && CanEnqueueForSite(siteHost))
+            await StartQueueDownloadAsync(selectedJobs);
+    }
+
+    private bool CanEnqueueForSite(string siteHost) => !_isWindowClosing &&
+        string.Equals(_settings.SiteHost, siteHost, StringComparison.OrdinalIgnoreCase);
+
+    private async Task<VideoDetails?> LoadQueueEnqueueDetailsAsync(string videoId, string siteHost)
+    {
+        if (!CanEnqueueForSite(siteHost)) return null;
+        try
+        {
+            if (_apiClient is null) InitSessionWithoutCf();
+            try
+            {
+                return await GetOrLoadVideoDetailsAsync(videoId, QueueDetailsOptions);
+            }
+            catch (Exception ex) when (CanEnqueueForSite(siteHost) && IsCloudflareSessionError(ex))
+            {
+                var verified = await EnsureVerifiedSessionAsync("读取入队视频详情需要完成站点验证。", failure: ex);
+                return verified && CanEnqueueForSite(siteHost) ? await GetOrLoadVideoDetailsAsync(videoId, QueueDetailsOptions) : null;
+            }
+        }
+        catch (Exception ex)
+        {
+            LogError("queue", $"入队前读取详情失败: videoId={videoId}", ex);
+            return null;
+        }
+    }
+
+    private static string GetQueueDetailTitle(VideoDetails details) => SimplifiedChineseConverter.ToSimplified(details.Title);
+
+    private DownloadQueueItem CreateQueueItem(VideoDetails details, VideoSource? source, string rule, DateTime namingTime)
+    {
+        var item = new DownloadQueueItem
+        {
+            Title = GetQueueDetailTitle(details),
+            VideoId = details.VideoId,
+            Url = source?.Url ?? details.Url,
+            Type = source?.Type ?? "mp4",
+            Quality = source?.Quality ?? 0,
+            UploadDate = details.UploadDate,
+            NamingRule = rule,
+            NamingTime = namingTime,
+            StageText = "等待",
+            QueueStatusText = source is null ? "待解析视频源" : "等待中"
+        };
+        item.TargetPath = CreateQueueTargetPath(item);
+        return item;
     }
 
     private static bool CanChangeQueueNaming(DownloadQueueItem item) => !item.IsDownloading &&
@@ -646,7 +623,8 @@ public partial class MainWindow
         return SelectSourceByQuality(sources);
     }
 
-    private async Task<VideoSource?> ResolveQueueItemSourceAsync(DownloadQueueItem item, CancellationToken cancellationToken = default, bool forceRefresh = false)
+    private async Task<VideoSource?> ResolveQueueItemSourceAsync(DownloadQueueItem item, CancellationToken cancellationToken = default,
+        bool forceRefresh = false, bool backgroundRefresh = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var operationId = CreateOperationId("queuesource");
@@ -659,8 +637,10 @@ public partial class MainWindow
         LogInfo("queue", $"[{operationId}] 解析队列项源: videoId={item.VideoId}, quality={item.Quality}, forceRefresh={forceRefresh}");
         // 下载命名必须使用 watch 页的完整标题（含作者前缀），不能复用列表/download 页的简略标题。
         // Meta 使加载器读取 watch 页；已加载的完整详情仍可直接复用，不必逐个打开详情面板。
-        var details = await GetOrLoadVideoDetailsAsync(item.VideoId, VideoDetailsLoadOptions.Basic | VideoDetailsLoadOptions.Meta | VideoDetailsLoadOptions.Sources, cancellationToken, forceRefresh);
+        var details = await GetOrLoadVideoDetailsAsync(item.VideoId, QueueDetailsOptions, cancellationToken, forceRefresh);
         cancellationToken.ThrowIfCancellationRequested();
+        // 会话恢复触发的后台解析可能比队列任务晚返回，不得改写在途任务的目标路径。
+        if (backgroundRefresh && (!ReferenceEquals(apiClient, _apiClient) || item.IsDownloading || !_downloadQueue.Contains(item))) return null;
         var requestedQuality = item.Quality;
         var source = SelectSourceForQueueItem(details?.Sources, item);
         if (source is null)
@@ -676,7 +656,7 @@ public partial class MainWindow
             item.QueueStatusText = $"等待中（画质回退 {requestedQuality}p→{source.Quality}p）";
         }
 
-        item.Title = string.IsNullOrWhiteSpace(details?.Title) ? item.Title : details!.Title;
+        if (details is not null && !string.IsNullOrWhiteSpace(details.Title)) item.Title = GetQueueDetailTitle(details);
         item.NamingRule ??= _settings.FileNamingRule;
         item.NamingTime ??= DateTime.Now;
         if (!string.IsNullOrWhiteSpace(details?.UploadDate)) item.UploadDate = details.UploadDate;
@@ -710,9 +690,15 @@ public partial class MainWindow
             (quality == 0 || item.Quality == 0 || item.Quality == quality));
     }
 
-    private async Task StartSelectedQueueItemsAsync(IEnumerable<DownloadQueueItem> items)
+    private static bool CanStartQueueItem(DownloadQueueItem item) =>
+        !item.IsDownloading && item.QueueState is not (DownloadQueueState.Error or DownloadQueueState.Completed);
+
+    private async Task StartSelectedQueueItemsAsync(IReadOnlyList<DownloadQueueItem> items)
     {
-        await StartQueueDownloadAsync(items);
+        if (_isDownloadingQueue) return;
+        var selected = items.Where(_downloadQueue.Contains).Distinct().ToList();
+        MarkQueueItemsForRetry(selected.Where(item => item.QueueState == DownloadQueueState.Error).ToList());
+        await StartQueueDownloadAsync(selected);
     }
 
     private static TaskCompletionSource<bool> CreateDownloadQueueChangedSignal()
@@ -727,6 +713,15 @@ public partial class MainWindow
         currentSignal.TrySetResult(true);
     }
 
+    private void RequestQueuePause()
+    {
+        if (_isPauseRequested) return;
+        _isPauseRequested = true;
+        _downloadQueueCancellationTokenSource?.Cancel();
+        UpdateDownloadQueueControlUi();
+        StatusText.Text = "正在暂停下载队列...";
+    }
+
     private async Task StartQueueDownloadAsync(IEnumerable<DownloadQueueItem>? preferredItems = null)
     {
         var operationId = CreateOperationId("queue");
@@ -735,15 +730,11 @@ public partial class MainWindow
             return;
         }
 
-        var selectedItems = preferredItems?.Where(_downloadQueue.Contains).Distinct().ToList() ?? [];
-        var useSelection = selectedItems.Count > 0;
-        var queueItems = useSelection ? selectedItems : _downloadQueue.ToList();
-        queueItems = queueItems
-            .Where(item => _downloadQueue.Contains(item) && item.QueueState != DownloadQueueState.Error && item.QueueState != DownloadQueueState.Completed)
-            .ToList();
+        var useSelection = preferredItems is not null;
+        var queueItems = (preferredItems ?? _downloadQueue).Where(item => _downloadQueue.Contains(item) && CanStartQueueItem(item)).Distinct().ToList();
         if (queueItems.Count == 0)
         {
-            StatusText.Text = "下载队列为空。";
+            StatusText.Text = useSelection ? "所选项目没有可启动的下载任务。" : "下载队列没有可启动的任务。";
             return;
         }
 
@@ -767,13 +758,13 @@ public partial class MainWindow
         try
         {
             var maxConcurrentDownloads = Math.Clamp(_settings.MaxConcurrentDownloads, 1, 3);
-            var downloadGate = new SemaphoreSlim(maxConcurrentDownloads, maxConcurrentDownloads);
+            using var downloadGate = new SemaphoreSlim(maxConcurrentDownloads, maxConcurrentDownloads);
             var pendingItems = queueItems.ToList();
             var runningTasks = new Dictionary<DownloadQueueItem, Task<QueueItemProcessResult>>();
 
             while (true)
             {
-                if (!useSelection)
+                if (!useSelection && !_isPauseRequested)
                 {
                     // 全队列模式：运行中新增的队列项会被收养；选中模式（单视频下载/重新解析）不收养。
                     foreach (var newItem in _downloadQueue)
@@ -813,8 +804,14 @@ public partial class MainWindow
                     runningTasks[item] = ProcessQueueItemAsync(item, operationId, downloadGate);
                 }
 
-                if (_isPauseRequested || (pendingItems.Count == 0 && runningTasks.Count == 0))
+                // 暂停停止派发，但必须收完所有在途结果后才能开放下一轮。
+                if (runningTasks.Count == 0 && (_isPauseRequested || pendingItems.Count == 0))
                 {
+                    await FlushScheduledDownloadQueueSaveAsync();
+                    // 全队列模式在最终落盘让出 UI 时也可能收到新项。
+                    if (!useSelection && !_isPauseRequested && !_isWindowClosing &&
+                        _downloadQueue.Any(item => item.QueueState is not (DownloadQueueState.Completed or DownloadQueueState.Error)))
+                        continue;
                     break;
                 }
 
@@ -835,7 +832,13 @@ public partial class MainWindow
                 var finishedItem = finishedPair.Key;
                 runningTasks.Remove(finishedItem);
                 var result = await finishedPair.Value;
+                _activeDownloadTargets.Remove(finishedItem, out var activeTarget);
                 ClearQueueItemCancellationToken(finishedItem);
+                if (!_downloadQueue.Contains(finishedItem))
+                {
+                    DeleteQueueItemTemporaryFile(finishedItem, activeTarget);
+                    result = QueueItemProcessResult.Removed();
+                }
 
                 switch (result.Outcome)
                 {
@@ -843,7 +846,7 @@ public partial class MainWindow
                         SetQueueItemVisualState(finishedItem, DownloadQueueState.Completed, "完成", "已完成", showProgress: true, progressValue: 100);
                         _downloadQueue.Remove(finishedItem);
                         _queueRunCompletedCount++;
-                        await TrySaveDownloadQueueAsync("queue", "保存下载队列失败");
+                        ScheduleDownloadQueueSave();
                         LogInfo("queue", $"[{operationId}] 队列项完成: videoId={finishedItem.VideoId}, completed={_queueRunCompletedCount}");
                         break;
                     case QueueItemOutcome.Paused:
@@ -855,7 +858,7 @@ public partial class MainWindow
                         break;
                     case QueueItemOutcome.Error:
                         _queueRunFailedCount++;
-                        await TrySaveDownloadQueueAsync("queue", "保存下载队列失败");
+                        ScheduleDownloadQueueSave();
                         StatusText.Text = $"下载失败，已跳过: {finishedItem.Title}";
                         LogInfo("queue", $"[{operationId}] 队列项失败并已跳过: videoId={finishedItem.VideoId}, failed={_queueRunFailedCount}");
                         break;
@@ -866,6 +869,7 @@ public partial class MainWindow
 
             if (_isPauseRequested || _hasPausedQueue)
             {
+                _hasPausedQueue = true;
                 _queueRunSummaryState = QueueRunSummaryState.Paused;
                 StatusText.Text = _queueRunCompletedCount == 0 ? "下载队列已暂停。" : $"下载队列已暂停，已完成 {_queueRunCompletedCount} 项。";
                 return;
@@ -889,6 +893,7 @@ public partial class MainWindow
             foreach (var cts in _activeQueueItemLinkedCancellationTokenSources.Values) cts.Dispose();
             _activeQueueItemCancellationTokenSources.Clear();
             _activeQueueItemLinkedCancellationTokenSources.Clear();
+            _activeDownloadTargets.Clear();
             _reResolveItems.Clear();
             _currentQueueDownloadItem = null;
             _isDownloadingQueue = false;
@@ -906,6 +911,7 @@ public partial class MainWindow
 
     private async Task<QueueItemProcessResult> ProcessQueueItemAsync(DownloadQueueItem item, string operationId, SemaphoreSlim downloadGate)
     {
+        var previousTargetPath = item.TargetPath;
         _currentQueueDownloadItem = item;
         item.IsDownloading = true;
         item.HasError = false;
@@ -913,9 +919,10 @@ public partial class MainWindow
         UpdateQueueRuntimeSummaryUi();
         LogInfo("queue", $"[{operationId}] 开始处理队列项: videoId={item.VideoId}, title={item.Title}, requestedQuality={item.Quality}");
 
+        CancellationToken queueCancellationToken = default;
         try
         {
-            var queueCancellationToken = CreateQueueItemCancellationToken(item);
+            queueCancellationToken = CreateQueueItemCancellationToken(item);
             VideoSource? source;
             try
             {
@@ -941,7 +948,7 @@ public partial class MainWindow
                 {
                     SetQueueItemVisualState(item, DownloadQueueState.Verifying, "重验", "等待重验", showProgress: true, isProgressIndeterminate: true);
                     UpdateQueueRuntimeSummaryUi();
-                    var verified = await EnsureVerifiedSessionAsync("下载前遇到 Cloudflare 验证，正在打开验证窗口...", queueCancellationToken, RecoveryRequestUrl(ex));
+                    var verified = await EnsureVerifiedSessionAsync("下载前遇到 Cloudflare 验证，正在打开验证窗口...", queueCancellationToken, ex);
                     if (!verified)
                     {
                         SetQueueItemVisualState(item, DownloadQueueState.Error, "失败", "验证失败");
@@ -993,36 +1000,54 @@ public partial class MainWindow
             }
             try
             {
-            SetQueueItemVisualState(item, DownloadQueueState.Downloading, "下载", "下载中", showProgress: true, progressValue: 0);
-            UpdateQueueRuntimeSummaryUi();
-            LogInfo("queue", $"[{operationId}] 开始下载队列项: videoId={item.VideoId}, quality={item.Quality}, type={item.Type}");
-            await TrySaveDownloadQueueAsync("queue", "保存下载队列失败");
-            var downloaded = await DownloadSourceAsync(source, item.Title, queueCancellationToken, item);
-            if (!_downloadQueue.Contains(item))
-            {
-                DeleteQueueItemTemporaryFile(item);
-                return QueueItemProcessResult.Removed();
-            }
+                queueCancellationToken.ThrowIfCancellationRequested();
+                if (!_downloadQueue.Contains(item)) return QueueItemProcessResult.Removed();
 
-            if (!downloaded)
-            {
-                if (queueCancellationToken.IsCancellationRequested)
+                SetQueueItemVisualState(item, DownloadQueueState.Downloading, "下载", "下载中", showProgress: true, progressValue: 0);
+                UpdateQueueRuntimeSummaryUi();
+                LogInfo("queue", $"[{operationId}] 开始下载队列项: videoId={item.VideoId}, quality={item.Quality}, type={item.Type}");
+                // 路径变化必须先落盘，避免应用意外退出后找不到这个断点；普通状态可合并。
+                if (!string.Equals(previousTargetPath, item.TargetPath, StringComparison.OrdinalIgnoreCase))
+                    await TrySaveDownloadQueueAsync("queue", "保存下载目标路径失败");
+                else
+                    ScheduleDownloadQueueSave();
+                var downloaded = await DownloadSourceAsync(source, item.Title, queueCancellationToken, item);
+                if (!_downloadQueue.Contains(item))
                 {
-                    SetQueueItemVisualState(item, DownloadQueueState.Paused, "暂停", "已暂停", showProgress: true, progressValue: item.ProgressValue);
-                    return QueueItemProcessResult.Paused();
+                    return QueueItemProcessResult.Removed();
                 }
 
-                SetQueueItemVisualState(item, DownloadQueueState.Error, "失败", item.QueueStatusText == "下载失败" ? "下载失败" : item.QueueStatusText);
-                LogInfo("queue", $"[{operationId}] 队列项下载失败: videoId={item.VideoId}");
-                return QueueItemProcessResult.Error();
-            }
+                if (!downloaded)
+                {
+                    if (queueCancellationToken.IsCancellationRequested)
+                    {
+                        SetQueueItemVisualState(item, DownloadQueueState.Paused, "暂停", "已暂停", showProgress: true, progressValue: item.ProgressValue);
+                        return QueueItemProcessResult.Paused();
+                    }
 
-            return QueueItemProcessResult.Completed();
+                    SetQueueItemVisualState(item, DownloadQueueState.Error, "失败", item.QueueStatusText == "下载失败" ? "下载失败" : item.QueueStatusText);
+                    LogInfo("queue", $"[{operationId}] 队列项下载失败: videoId={item.VideoId}");
+                    return QueueItemProcessResult.Error();
+                }
+
+                return QueueItemProcessResult.Completed();
             }
             finally
             {
                 downloadGate.Release();
             }
+        }
+        catch (OperationCanceledException) when (queueCancellationToken.IsCancellationRequested)
+        {
+            SetQueueItemVisualState(item, DownloadQueueState.Paused, "暂停", "已暂停", showProgress: true, progressValue: item.ProgressValue);
+            return QueueItemProcessResult.Paused();
+        }
+        catch (Exception ex)
+        {
+            // 包括下载失败处理内部的重解析/重试异常，不能传播到队列调度器。
+            LogError("queue", $"[{operationId}] 队列项处理失败: videoId={item.VideoId}", ex);
+            SetQueueItemVisualState(item, DownloadQueueState.Error, "失败", "下载失败");
+            return QueueItemProcessResult.Error();
         }
         finally
         {
@@ -1035,9 +1060,10 @@ public partial class MainWindow
         }
     }
 
-    private void DeleteQueueItemTemporaryFile(DownloadQueueItem item)
+    private void DeleteQueueItemTemporaryFile(DownloadQueueItem item, string? activeTarget = null)
     {
-        if (string.IsNullOrWhiteSpace(item.TargetPath))
+        var path = activeTarget ?? item.TargetPath;
+        if (string.IsNullOrWhiteSpace(path))
         {
             return;
         }
@@ -1045,14 +1071,14 @@ public partial class MainWindow
         try
         {
             var directory = EnsureDownloadDirectory();
-            var targetPath = DownloadPathGuard.EnsureWithinDirectory(directory, item.TargetPath);
+            var targetPath = DownloadPathGuard.EnsureWithinDirectory(directory, path);
+            // 旧版队列可能有共用的路径，移除一项不应删除其他项的断点。
+            if (IsDownloadPathReferenced(targetPath, item)) return;
             var temporaryPath = targetPath + ".tmp";
-            if (File.Exists(temporaryPath))
-            {
-                File.Delete(temporaryPath);
-            }
+            File.Delete(DownloadService.GetResumeMetadataPath(temporaryPath));
+            File.Delete(temporaryPath);
         }
-        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException)
+        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException or UnauthorizedAccessException)
         {
             LogInfo("download", $"忽略队列临时文件清理: {ex.Message}");
         }
@@ -1072,13 +1098,15 @@ public partial class MainWindow
             var removedCurrentItem = _currentQueueDownloadItem is not null && selectedItems.Contains(_currentQueueDownloadItem);
             foreach (var item in selectedItems)
             {
-                if (item.IsDownloading)
+                if (_activeQueueItemCancellationTokenSources.ContainsKey(item))
                 {
                     CancelQueueItem(item);
                 }
-                DeleteQueueItemTemporaryFile(item);
+                else
+                {
+                    DeleteQueueItemTemporaryFile(item);
+                }
                 _downloadQueue.Remove(item);
-                ClearQueueItemCancellationToken(item);
             }
             NotifyDownloadQueueChanged();
 
@@ -1114,6 +1142,7 @@ public partial class MainWindow
 
     private async Task MoveQueueItemsAsync(IEnumerable<DownloadQueueItem> items, Func<List<int>, List<int>> reorder, string successMessage)
     {
+        if (_isDownloadingQueue) return;
         var selectedItems = items.Where(_downloadQueue.Contains).Distinct().ToList();
         if (selectedItems.Count == 0)
         {
@@ -1128,7 +1157,8 @@ public partial class MainWindow
         }
 
         var targetIndexes = reorder(indexes);
-        if (targetIndexes.Count != indexes.Count || targetIndexes.SequenceEqual(indexes))
+        if (targetIndexes.Count != indexes.Count || targetIndexes.SequenceEqual(indexes) ||
+            targetIndexes.Any(index => index < 0 || index >= _downloadQueue.Count))
         {
             return;
         }
@@ -1291,10 +1321,10 @@ public partial class MainWindow
 
     private void UpdateDownloadQueueControlUi()
     {
-        DownloadQueueButton.Content = _isDownloadingQueue ? "暂停下载" : (_hasPausedQueue ? "继续下载" : "开始下载");
+        DownloadQueueButton.Content = _isPauseRequested ? "正在暂停…" : (_isDownloadingQueue ? "暂停下载" : (_hasPausedQueue ? "继续下载" : "开始下载"));
         DownloadQueueButton.Style = (Style)FindResource(_isDownloadingQueue ? "SecondaryActionButtonStyle" : "PrimaryActionButtonStyle");
-        DownloadQueueButton.IsEnabled = _isDownloadingQueue || _downloadQueue.Count > 0;
-        RetryFailedQueueItemsButton.IsEnabled = _downloadQueue.Any(item => item.QueueState == DownloadQueueState.Error);
+        DownloadQueueButton.IsEnabled = !_isPauseRequested && (_isDownloadingQueue || _downloadQueue.Count > 0);
+        RetryFailedQueueItemsButton.IsEnabled = CanRetryFailedQueueItems && _downloadQueue.Any(item => item.QueueState == DownloadQueueState.Error);
         ClearQueueButton.IsEnabled = !_isDownloadingQueue;
         UpdateQueueRuntimeSummaryUi();
     }

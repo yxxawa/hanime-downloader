@@ -64,7 +64,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _isLoadingDetails;
     private bool _isDownloadingQueue;
     private int _detailsRequestVersion;
-    private Task<bool>? _sessionRecoveryTask;
     private bool _isPauseRequested;
     private bool _hasPausedQueue;
     private int _operationSequence;
@@ -79,6 +78,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private DownloadQueueItem? _queueCtrlClickedItem;
     private List<DownloadQueueItem>? _queueDragItems;
     private CancellationTokenSource? _downloadQueueCancellationTokenSource;
+    private readonly Dictionary<DownloadQueueItem, string> _activeDownloadTargets = new();
     private readonly Dictionary<DownloadQueueItem, CancellationTokenSource> _activeQueueItemCancellationTokenSources = [];
     private readonly Dictionary<DownloadQueueItem, CancellationTokenSource> _activeQueueItemLinkedCancellationTokenSources = [];
     private readonly HashSet<DownloadQueueItem> _reResolveItems = [];
@@ -118,6 +118,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _historyFilterTimer.Stop();
             _historyView?.Refresh();
         };
+        _downloadQueueSaveTimer.Tick += DownloadQueueSaveTimer_OnTick;
         InitializeCollections();
         Loaded += OnLoaded;
         Closing += OnClosing;
@@ -223,44 +224,28 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
         }
 
-        foreach (Window window in Application.Current.Windows)
+        _isWindowClosing = true;
+        CancelSessionOperations();
+        foreach (var window in Application.Current.Windows.Cast<Window>().ToArray())
         {
             if (window != this && window.IsLoaded)
                 window.Close();
         }
 
-        SaveWindowBounds();
-        SaveSettings();
+        try
+        {
+            SaveWindowBounds();
+            SaveSettings();
+        }
+        catch (Exception ex)
+        {
+            LogError("settings", "退出时保存设置失败", ex);
+        }
         _titleCopiedHintCts?.Dispose();
         _titleCopiedHintCts = null;
 
-        if (_settings.PersistDownloadQueue)
-        {
-            try
-            {
-                AtomicFile.WriteAllText(DownloadQueueFilePath, JsonSerializer.Serialize(
-                    _downloadQueue.Select(item => new DownloadQueueRecord
-                    {
-                        Title = item.Title,
-                        Url = item.Url,
-                        Type = item.Type,
-                        Quality = item.Quality,
-                        VideoId = item.VideoId,
-                        TargetPath = item.TargetPath,
-                        NamingRule = item.NamingRule,
-                        NamingAuthor = item.NamingAuthor,
-                        NamingDate = item.NamingDate,
-                        UploadDate = item.UploadDate,
-                        NamingTime = item.NamingTime,
-                        HasError = item.HasError
-                    }), FavoritesJsonOptions));
-            }
-            catch (Exception ex)
-            {
-                LogError("queue", "退出时保存下载队列失败", ex);
-            }
-        }
-        else
+        FlushDownloadQueueOnClosing();
+        if (!_settings.PersistDownloadQueue)
         {
             foreach (var item in _downloadQueue)
                 DeleteQueueItemTemporaryFile(item);
@@ -274,6 +259,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _ = CheckForUpdatesOnStartupAsync();
         _startupSessionTask = RestoreStartupSessionAsync(_startupSessionCancellation.Token);
         var startupStatus = await _startupSessionTask;
+        if (_isWindowClosing) return;
         if (!_startupSessionCancellation.IsCancellationRequested)
         {
             ApplyStartupWarnings(startupStatus);
@@ -297,7 +283,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
                 try
                 {
-                    referenced.Add(DownloadPathGuard.EnsureWithinDirectory(directory, item.TargetPath) + ".tmp");
+                    var temporaryPath = DownloadPathGuard.EnsureWithinDirectory(directory, item.TargetPath) + ".tmp";
+                    referenced.Add(temporaryPath);
+                    referenced.Add(DownloadService.GetResumeMetadataPath(temporaryPath));
                 }
                 catch
                 {
@@ -385,6 +373,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
 
             var oldSiteHost = _settings.SiteHost;
+            if (oldSiteHost != dialog.Settings.SiteHost) CancelSessionOperations();
             var oldPersistQueue = _settings.PersistDownloadQueue;
             var oldLargeSearchResultCovers = _settings.LargeSearchResultCovers;
             var oldFavoritesMode = _settings.FavoritesMode;
@@ -472,6 +461,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 StatusText.Text = "设置已保存。";
             }
+
+            if (oldPersistQueue != _settings.PersistDownloadQueue &&
+                !await TrySaveDownloadQueueAsync("queue", "保存队列保留设置失败"))
+                StatusText.Text = "设置已保存，但更新队列文件失败。";
 
             var accountBindingChanged =
                 !string.Equals(oldAccountUserId, _settings.AccountUserId, StringComparison.OrdinalIgnoreCase) ||
@@ -581,11 +574,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private string GetCookieCacheFilePath()
     {
         return AppPaths.CookieCacheFile(_settings.SiteHost);
-    }
-
-    private async Task SaveCookieCacheAsync()
-    {
-        await AtomicFile.WriteAllTextAsync(GetCookieCacheFilePath(), JsonSerializer.Serialize(_appState.Cookies, FavoritesJsonOptions));
     }
 
     private IReadOnlyList<BrowserCookieRecord> LoadCookieCache()

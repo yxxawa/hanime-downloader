@@ -87,7 +87,8 @@ public sealed partial class DownloadService
         };
     }
 
-    public async Task DownloadAsync(
+    /// <summary>下载媒体并返回实际成品路径；MPEG-TS HLS 的成品使用 .ts 扩展名。</summary>
+    public async Task<string> DownloadAsync(
         string url,
         string outputPath,
         IProgress<DownloadProgressInfo>? progress = null,
@@ -102,14 +103,17 @@ public sealed partial class DownloadService
         var tmpPath = finalPath + ".tmp";
         RejectReparsePoint(finalPath);
         RejectReparsePoint(tmpPath);
+        if (File.Exists(finalPath))
+        {
+            throw new InvalidOperationException($"目标文件已存在，拒绝覆盖: {finalPath}");
+        }
 
         await using var progressMonitor = new DownloadProgressMonitor(progress, cancellationToken);
         progress = progressMonitor;
         var isPlaylist = LooksLikePlaylistUrl(uri) || IsPlaylistMediaType(mediaType);
         if (isPlaylist)
         {
-            await DownloadHlsAsync(uri, finalPath, tmpPath, progress, cancellationToken, preloadedPlaylist, targetQuality);
-            return;
+            return await DownloadHlsAsync(uri, finalPath, progress, cancellationToken, preloadedPlaylist, targetQuality);
         }
 
         await _retryPolicy.ExecuteAsync(
@@ -123,6 +127,7 @@ public sealed partial class DownloadService
                 return true;
             },
             cancellationToken);
+        return finalPath;
     }
 
     /// <summary>

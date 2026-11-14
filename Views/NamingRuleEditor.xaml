@@ -12,7 +12,7 @@
  <StackPanel>
   <ComboBox x:Name="PresetCombo" Height="30" Margin="0,0,0,7" DisplayMemberPath="Label" SelectedValuePath="Value" SelectionChanged="PresetCombo_OnSelectionChanged" ToolTip="选一个预设，再编辑模板或调整字段顺序。"/>
   <TextBox x:Name="TemplateBox" Height="32" Padding="7,0" VerticalContentAlignment="Center" TextChanged="TemplateBox_OnTextChanged" AutomationProperties.Name="自定义命名模板"/>
-  <TextBlock Margin="0,6,0,7" Foreground="{DynamicResource ThemeTextSecondaryBrush}" TextWrapping="Wrap" FontSize="11" Text="直接编辑即可调整字段顺序；点击字段插入到光标处。使用 \ 建子目录，扩展名自动补 .mp4。"/>
+  <TextBlock Margin="0,6,0,7" Foreground="{DynamicResource ThemeTextSecondaryBrush}" TextWrapping="Wrap" FontSize="11" Text="直接编辑即可调整字段顺序；点击字段插入到光标处。使用 \ 建子目录，预览为 .mp4，TS 视频实际保存为 .ts。"/>
   <WrapPanel>
    <Button Style="{StaticResource TokenButton}" Content="完整标题" Tag="{}{title}" Click="TokenButton_OnClick"/>
    <Button Style="{StaticResource TokenButton}" Content="去作者标题" Tag="{}{name}" Click="TokenButton_OnClick"/>
@@ -28,7 +28,7 @@
    <StackPanel>
     <TextBlock Text="下载目录内的路径预览" FontSize="11" Foreground="{DynamicResource ThemeTextSecondaryBrush}"/>
     <TextBlock x:Name="PreviewText" Margin="0,4,0,0" TextWrapping="Wrap" Foreground="{DynamicResource ThemeTextBrush}"/>
-    <TextBlock x:Name="ErrorText" Foreground="#C00000" TextWrapping="Wrap" Visibility="Collapsed"/>
+    <TextBlock x:Name="ErrorText" Foreground="{DynamicResource ThemeErrorTextBrush}" TextWrapping="Wrap" Visibility="Collapsed"/>
    </StackPanel>
   </Border>
   <TextBlock Margin="0,6,0,0" Foreground="{DynamicResource ThemeTextSecondaryBrush}" TextWrapping="Wrap" FontSize="11" Text="作者取标题开头的 [作者] 或【作者】；无前缀用“未知作者”。发布日期缺失用“未知日期”。队列右键可单独修改规则、作者和日期。"/>

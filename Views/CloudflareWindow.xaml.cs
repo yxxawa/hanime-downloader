@@ -92,18 +92,20 @@ public partial class CloudflareWindow : Window
         };
     }
 
-    public async Task ImportCookiesAsync(IReadOnlyList<BrowserCookieRecord> cookies)
+    public async Task ImportCookiesAsync(IReadOnlyList<BrowserCookieRecord> cookies, CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync();
-        if (Browser.CoreWebView2 is null)
-        {
-            throw new InvalidOperationException("浏览器上下文尚未初始化，请先完成验证。");
-        }
+        cancellationToken.ThrowIfCancellationRequested();
+        await EnsureInitializedAsync().WaitAsync(cancellationToken);
+        var core = Browser.CoreWebView2 ?? throw new InvalidOperationException("浏览器上下文尚未初始化，请先完成验证。");
+        var manager = core.CookieManager;
+        var previousCookies = await manager.GetCookiesAsync(_siteBaseUrl).WaitAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        await ClearHanimeCookiesAsync();
+        // 清除和导入在同一次 UI 调度中完成，前台接管不会插进这两步之间。
+        foreach (var cookie in previousCookies) manager.DeleteCookie(cookie);
         foreach (var record in cookies.Where(record => !string.IsNullOrWhiteSpace(record.Name) && !string.IsNullOrWhiteSpace(record.Value)))
         {
-            var cookie = Browser.CoreWebView2.CookieManager.CreateCookie(
+            var cookie = manager.CreateCookie(
                 record.Name,
                 record.Value,
                 string.IsNullOrWhiteSpace(record.Domain) ? $".{_siteHost}" : record.Domain,
@@ -121,10 +123,12 @@ public partial class CloudflareWindow : Window
                     // 过期时间异常时保持会话 Cookie。
                 }
             }
-            Browser.CoreWebView2.CookieManager.AddOrUpdateCookie(cookie);
+            manager.AddOrUpdateCookie(cookie);
         }
 
-        Cookies = await _cookieBridge.ExportCookiesAsync(Browser.CoreWebView2.CookieManager);
+        var imported = await _cookieBridge.ExportCookiesAsync(manager).WaitAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        Cookies = imported;
         CookieHeader = _cookieBridge.BuildCookieHeader(Cookies);
         FinishButton.IsEnabled = CookieHeader.Contains("cf_clearance=", StringComparison.OrdinalIgnoreCase);
         StatusText.Text = FinishButton.IsEnabled ? "已导入 Cookie，请刷新或直接继续使用。" : "已导入 Cookie，但未检测到 cf_clearance。";
@@ -238,18 +242,12 @@ public partial class CloudflareWindow : Window
         _initialized = false;
     }
 
-    private async Task ClearHanimeCookiesAsync()
+    private async Task ClearHanimeCookiesAsync(CancellationToken cancellationToken)
     {
-        if (Browser.CoreWebView2 is null)
-        {
-            return;
-        }
-
-        var cookies = await Browser.CoreWebView2.CookieManager.GetCookiesAsync(_siteBaseUrl);
-        foreach (var cookie in cookies)
-        {
-            Browser.CoreWebView2.CookieManager.DeleteCookie(cookie);
-        }
+        if (Browser.CoreWebView2 is not { } core) return;
+        var cookies = await core.CookieManager.GetCookiesAsync(_siteBaseUrl).WaitAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        foreach (var cookie in cookies) core.CookieManager.DeleteCookie(cookie);
 
         Cookies = [];
         CookieHeader = string.Empty;
@@ -264,6 +262,11 @@ public partial class CloudflareWindow : Window
         public string? Url { get; set; }
         public string? Html { get; set; }
         public string? Error { get; set; }
+        public string? Mitigation { get; set; }
+        [System.Text.Json.Serialization.JsonIgnore]
+        public long ReceivedAt { get; set; }
+        [System.Text.Json.Serialization.JsonIgnore]
+        public string? MessageSource { get; set; }
     }
 
     private static T? DeserializeScriptResult<T>(string payload)
@@ -299,8 +302,7 @@ public partial class CloudflareWindow : Window
         public string? Ready { get; set; }
         public int BodyLength { get; set; }
         public bool Challenge { get; set; }
-        public string? Visibility { get; set; }
-        public bool Focused { get; set; }
+        public int Status { get; set; }
         public int ResultLinks { get; set; }
     }
 }

@@ -1,4 +1,4 @@
-﻿<p align="center">
+<p align="center">
   <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=12&height=180&section=header&text=Hanime1%20Downloader&fontSize=48&fontColor=fff&animation=fadeIn&fontAlignY=38&desc=视频下载工具&descAlignY=58&descSize=16" width="100%"/>
 </p>
 
@@ -54,12 +54,12 @@
 **下载与队列**
 
 - 自动解析多清晰度视频源（1080P / 720P / 480P 等）
-- 批量下载前自动补全完整标题（含站点提供的作者前缀），右键支持「加入队列并自动下载」
-- HLS/m3u8 分片下载、AES-128 解密与合并
-- 下载队列：并发下载、暂停 / 恢复、失败自动重试（可配置 0-8 次）
+- 列表右键入队先读取详情页完整标题（含站点提供的作者前缀），按设置中的模板生成并显示预计文件名；「立即下载」只启动所选任务
+- HLS/m3u8 使用固定数量的并发任务；普通分片直接写盘，合并按播放列表顺序流式进行。支持 AES-128，MPEG-TS 保存为 .ts，分片 MP4 保存为 .mp4
+- 下载队列：并发下载、暂停 / 恢复、失败自动重试（可配置 0-8 次）；自动状态变更短暂合并保存，暂停和退出时提交最新队列
 - 磁盘空间预检、瞬时速度显示
-- 断点续传（服务器文件变化自动从头重下）
-- 下载历史记录，避免重复下载
+- MP4 断点续传：使用源地址和强 ETag 校验；服务器文件变化、没有可验证标识或旧版断点没有标识时，从头重下
+- 下载历史与已下载标记；同名目标自动加序号，不覆盖已有文件，也不把已有同名文件当作本次下载
 - 失败后可手动触发重新解析视频源
 - 自定义文件命名：字段自由排序、实时预览、作者子目录；保留原默认 `{title}_{videoId}`
 - 模板示例：`{author}\{date}-{name}-{quality}.MP4` 或 `{name}-{quality}.MP4`
@@ -74,10 +74,11 @@
 
 **个性化**
 
-- 浅色 / 深色主题切换
+- 浅色 / 深色主题切换；设置按「下载、文件命名、站点与收藏、外观与详情、关于」分类，自定义站点可粘贴链接添加
 - 详情面板显示项自由开关
 - 内置视频播放器（按视频记忆播放进度，下次打开自动续播）
-- Cloudflare 会话复用，减少重复验证；手动验证立即显示窗口，完成后点击按钮继续
+- Cloudflare 会话复用；页内请求收到明确挑战响应头后直接打开验证窗口，整页回退在 DOM 就绪时判断，不等图片加载完成
+- 前台验证窗口先显示、再等待后台会话交接；并发请求共用一个窗口，取消单个请求不会中断其他请求的验证
 - 启动时自动检查 GitHub Release 新版本（发现新版后工具栏显示「有新版本」按钮）
 - 列表封面缩略图缓存
 
@@ -124,6 +125,25 @@ dotnet publish "Hanime1Downloader.CSharp.csproj" -c Release -p:DebugType=None -p
 | `cookies.{host}.json` | 各站点的 Cloudflare 会话缓存（`cookies.json` 为旧版格式） |
 | `app.log` | 运行日志（超过 5MB 自动轮转） |
 | `crash.log` | 崩溃日志 |
+
+---
+
+## Cloudflare 耗时诊断
+
+Debug 版默认记录耗时。Release 版可在启动程序前设置环境变量 `HANIME_CF_TIMING=1`，例如：
+
+```powershell
+$env:HANIME_CF_TIMING = '1'
+dotnet run --project Hanime1Downloader.CSharp.csproj -c Release
+```
+
+在 `app.log` 查找 `[cf-timing]`，同一次验证用 `id` 关联：
+
+- `shown`：宿主收到响应头到确认挑战、确认挑战到窗口显示。页内请求的响应头时间以 WebView2 向宿主回传标记为准。
+- `render_tick`：窗口显示到下一次 WPF 渲染回调。
+- `dom_ready`：验证页面开始导航到 `DOMContentLoaded`；不代表挑战已通过。
+
+`-` 表示该路径没有对应时间点。这些耗时记录不包含 URL、Cookie 或页面正文。
 
 ---
 

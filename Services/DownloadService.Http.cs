@@ -152,7 +152,7 @@ public sealed partial class DownloadService
         }
     }
 
-    private static bool IsPlaylistMediaType(string? mediaType)
+    internal static bool IsPlaylistMediaType(string? mediaType)
     {
         if (string.IsNullOrWhiteSpace(mediaType))
         {
@@ -163,6 +163,9 @@ public sealed partial class DownloadService
                mediaType.Contains("mpegurl", StringComparison.OrdinalIgnoreCase) ||
                mediaType.Contains("apple.mpeg", StringComparison.OrdinalIgnoreCase);
     }
+
+    private static Uri GetEffectiveRequestUri(HttpResponseMessage response, Uri fallback) =>
+        response.RequestMessage?.RequestUri ?? fallback;
 
     private static bool LooksLikePlaylistUrl(Uri uri)
     {

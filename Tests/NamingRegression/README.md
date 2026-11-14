@@ -43,3 +43,5 @@ stored enqueue time so retries and restarts do not silently generate a different
 and `{quality}` remain supported. Slashes in metadata are sanitized; only separators in the
 template create subfolders. Absolute paths, traversal components, unknown tokens and malformed
 braces are rejected. This feature does not change network/session verification logic.
+
+The settings workflow checks the category sidebar, inline validation, custom site management, account edit/save behavior, and cover control dependencies. Settings previews for both themes are rendered under `artifacts/settings-*.png`.

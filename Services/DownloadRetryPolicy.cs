@@ -15,7 +15,7 @@ public sealed class DownloadRetryPolicy
         TimeSpan? initialDelay = null,
         TimeSpan? maxDelay = null)
     {
-        MaxAttempts = Math.Clamp(maxAttempts, 1, 8);
+        MaxAttempts = Math.Clamp(maxAttempts, 1, 9);
         InitialDelay = initialDelay ?? TimeSpan.FromMilliseconds(350);
         MaxDelay = maxDelay ?? TimeSpan.FromSeconds(5);
     }

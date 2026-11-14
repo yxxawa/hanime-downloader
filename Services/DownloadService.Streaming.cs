@@ -50,7 +50,7 @@ public sealed partial class DownloadService
     }
 
     // 必须重试整个正文读取，仅重试请求头无法恢复卡住的播放列表/分片/密钥。
-    private async Task<byte[]> ReadResponseWithRetryAsync(Func<HttpRequestMessage> requestFactory,
+    private async Task<(byte[] Bytes, Uri EffectiveUri)> ReadResponseWithRetryAsync(Func<HttpRequestMessage> requestFactory,
         Action<HttpResponseMessage> validateResponse, CancellationToken cancellationToken)
     {
         return await _retryPolicy.ExecuteAsync(async (_, token) =>
@@ -59,7 +59,8 @@ public sealed partial class DownloadService
             using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
             response.EnsureSuccessStatusCode();
             validateResponse(response);
-            return await ReadBufferedResponseAsync(response, token);
+            var bytes = await ReadBufferedResponseAsync(response, token);
+            return (bytes, GetEffectiveRequestUri(response, request.RequestUri!));
         }, cancellationToken);
     }
 

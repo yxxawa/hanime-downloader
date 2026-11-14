@@ -11,16 +11,18 @@ public static class AtomicFile
 {
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> PathGates = new(StringComparer.OrdinalIgnoreCase);
 
-    public static async Task WriteAllTextAsync(string path, string content)
+    public static async Task WriteAllTextAsync(string path, string content, CancellationToken cancellationToken = default)
     {
         var gate = PathGates.GetOrAdd(Path.GetFullPath(path), _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync();
+        // 同一路径也可能从 WPF Closing 同步保存。持锁期间不能依赖 UI 线程继续执行。
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             var tmp = CreateTempPath(path);
             try
             {
-                await File.WriteAllTextAsync(tmp, content);
+                await File.WriteAllTextAsync(tmp, content, cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
                 File.Move(tmp, path, overwrite: true);
             }
             catch

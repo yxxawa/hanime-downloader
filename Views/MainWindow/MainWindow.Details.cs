@@ -123,7 +123,7 @@ public partial class MainWindow
             }
 
             SourcesSummaryText.Text = "当前会话失效，正在等待 Cloudflare 重验...";
-            var restored = await EnsureVerifiedSessionAsync("检测到 Cloudflare 会话失效，正在自动打开验证窗口...", cancellationTokenSource.Token, RecoveryRequestUrl(ex));
+            var restored = await EnsureVerifiedSessionAsync("检测到 Cloudflare 会话失效，正在自动打开验证窗口...", cancellationTokenSource.Token, ex);
             if (restored && !isRetry && !cancellationTokenSource.IsCancellationRequested)
             {
                 SourcesSummaryText.Text = "会话已恢复，正在重新读取详情与视频源...";
@@ -618,7 +618,8 @@ public partial class MainWindow
 
     private VideoDetailsLoadOptions GetActiveVideoDetailsLoadOptions()
     {
-        return VideoDetailsLoadPolicy.ForVisibility(_settings.VideoDetailsVisibility);
+        // 即使用户隐藏元数据字段，详情标题仍从 watch 页读取，而不是使用下载页的简略标题。
+        return VideoDetailsLoadPolicy.ForVisibility(_settings.VideoDetailsVisibility) | VideoDetailsLoadOptions.Meta;
     }
 
     private async Task<VideoDetails?> GetOrLoadVideoDetailsAsync(string videoId, VideoDetailsLoadOptions? requestedLoadOptions = null, CancellationToken cancellationToken = default, bool forceRefresh = false)

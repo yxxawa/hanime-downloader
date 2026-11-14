@@ -203,11 +203,6 @@ public partial class MainWindow
 
     private void RelatedList_OnMouseRightButtonUp(object sender, MouseButtonEventArgs e)
     {
-        var item = GetListBoxItemAt(RelatedList, e.GetPosition(RelatedList));
-        if (item?.DataContext is VideoSummary video && !RelatedList.SelectedItems.Contains(video))
-        {
-            RelatedList.SelectedItem = video;
-        }
         ShowVideoListContextMenu(RelatedList, e.GetPosition(RelatedList));
     }
 
@@ -230,103 +225,88 @@ public partial class MainWindow
 
     private void ShowVideoListContextMenu(ListBox listBox, Point position, bool isFavoriteList = false)
     {
-        var selectedVideos = listBox.SelectedItems.Cast<VideoSummary>().ToList();
-        if (selectedVideos.Count == 0)
-        {
-            return;
-        }
+        if (GetListBoxItemAt(listBox, position)?.DataContext is not VideoSummary hit) return;
+        if (!listBox.SelectedItems.Contains(hit)) listBox.SelectedItem = hit;
+        var videos = listBox.SelectedItems.OfType<VideoSummary>().ToList();
+        if (videos.Count == 0) return;
 
+        // 结果和收藏的单击会加载详情；只有尚未加载的单项才需要额外入口。
+        var needsDetails = ReferenceEquals(listBox, RelatedList) || (videos.Count == 1 && !_isLoadingDetails &&
+            !string.Equals(_currentDetailsVideoId, videos[0].VideoId, StringComparison.OrdinalIgnoreCase));
+        var menu = BuildVideoContextMenu(videos, isFavoriteList, showDetailsAction: needsDetails);
+        ShowListContextMenu(menu, listBox);
+    }
+
+    private ContextMenu BuildVideoContextMenu(IReadOnlyList<VideoSummary> videos, bool isFavoriteList, bool showDetailsAction)
+    {
         var menu = new ContextMenu();
-        if (selectedVideos.Count == 1)
+        if (videos.Count == 1)
         {
-            var viewItem = new MenuItem { Header = "查看信息" };
-            viewItem.Click += async (_, _) =>
-            {
-                try
-                {
-                    await LoadDetailsAsync(selectedVideos[0]);
-                }
-                catch (Exception ex)
-                {
-                    HandleUiActionError("details", "读取详情失败", ex);
-                }
-            };
-            menu.Items.Add(viewItem);
-
-            if (!isFavoriteList)
-            {
-                var playItem = new MenuItem { Header = "播放" };
-                playItem.Click += async (_, _) => await PlayVideoSummaryAsync(selectedVideos[0]);
-                menu.Items.Add(playItem);
-            }
+            if (showDetailsAction)
+                menu.Items.Add(CreateAsyncMenuAction("查看详情", "details", "读取详情失败", () => LoadDetailsAsync(videos[0])));
+            menu.Items.Add(CreateAsyncMenuAction("播放视频", "player", "播放视频失败", () => PlayVideoSummaryAsync(videos[0])));
         }
 
-        var downloadItem = new MenuItem { Header = isFavoriteList ? "下载" : "加入下载队列" };
-        downloadItem.Click += async (_, _) =>
+        if (_isDownloadingQueue)
         {
-            try
-            {
-                await QueueVideosForDownloadAsync(selectedVideos);
-            }
-            catch (Exception ex)
-            {
-                HandleUiActionError("queue", "加入下载队列失败", ex);
-            }
-        };
-        menu.Items.Add(downloadItem);
-
-        var downloadNowItem = new MenuItem { Header = "加入队列并自动下载" };
-        downloadNowItem.Click += async (_, _) =>
-        {
-            try
-            {
-                await QueueVideosForDownloadAsync(selectedVideos, startImmediately: true);
-            }
-            catch (Exception ex)
-            {
-                HandleUiActionError("queue", "自动下载失败", ex);
-            }
-        };
-        menu.Items.Add(downloadNowItem);
-
-        if (isFavoriteList)
-        {
-            var removeItem = new MenuItem { Header = IsAccountFavoritesMode ? "取消账号收藏" : "移除" };
-            if (IsAccountFavoritesMode)
-            {
-                removeItem.Click += async (_, _) => await RemoveSelectedAccountFavoritesAsync(selectedVideos);
-            }
-            else
-            {
-                removeItem.Click += (_, _) => RemoveSelectedFavorites(selectedVideos);
-            }
-            menu.Items.Add(removeItem);
+            // 此时“立即下载”也只能入队，不再显示两个效果相同的选项。
+            menu.Items.Add(CreateAsyncMenuAction("加入下载队列", "queue", "加入下载队列失败", () => QueueVideosForDownloadAsync(videos)));
         }
         else
         {
-            var favoriteItem = new MenuItem { Header = IsAccountFavoritesMode ? "添加到账号收藏" : "添加到收藏夹" };
-            if (IsAccountFavoritesMode)
-            {
-                favoriteItem.Click += async (_, _) => await AddVideosToAccountFavoritesAsync(selectedVideos);
-            }
-            else if (_favoriteFolders.Count > 1)
-            {
-                foreach (var folderName in _favoriteFolders.Keys)
-                {
-                    var name = folderName;
-                    var sub = new MenuItem { Header = name };
-                    sub.Click += (_, _) => AddVideosToFavoriteFolder(selectedVideos, name);
-                    favoriteItem.Items.Add(sub);
-                }
-            }
-            else
-            {
-                favoriteItem.Click += (_, _) => AddVideosToFavorites(selectedVideos);
-            }
-            menu.Items.Add(favoriteItem);
+            var download = new MenuItem { Header = "下载" };
+            download.Items.Add(CreateAsyncMenuAction("立即下载所选视频", "queue", "下载所选视频失败", () => QueueVideosForDownloadAsync(videos, startImmediately: true)));
+            download.Items.Add(CreateAsyncMenuAction("仅加入队列", "queue", "加入下载队列失败", () => QueueVideosForDownloadAsync(videos)));
+            menu.Items.Add(download);
         }
 
-        menu.PlacementTarget = listBox;
+        menu.Items.Add(new Separator());
+        if (isFavoriteList)
+        {
+            menu.Items.Add(IsAccountFavoritesMode
+                ? CreateAsyncMenuAction("取消账号收藏", "favorites", "取消收藏失败", () => RemoveSelectedAccountFavoritesAsync(videos))
+                : CreateMenuAction("从当前收藏夹移除", () => RemoveSelectedFavorites(videos)));
+        }
+        else if (IsAccountFavoritesMode)
+        {
+            menu.Items.Add(CreateAsyncMenuAction("添加到账号收藏", "favorites", "添加收藏失败", () => AddVideosToAccountFavoritesAsync(videos)));
+        }
+        else if (_favoriteFolders.Count > 1)
+        {
+            var favorite = new MenuItem { Header = "添加到收藏夹" };
+            foreach (var folder in _favoriteFolders.Keys)
+                favorite.Items.Add(CreateMenuAction(folder, () => AddVideosToFavoriteFolder(videos, folder)));
+            menu.Items.Add(favorite);
+        }
+        else
+        {
+            menu.Items.Add(CreateMenuAction("添加到收藏夹", () => AddVideosToFavorites(videos)));
+        }
+
+        return menu;
+    }
+
+    private static MenuItem CreateMenuAction(string header, Action action)
+    {
+        var item = new MenuItem { Header = header };
+        item.Click += (_, _) => action();
+        return item;
+    }
+
+    private MenuItem CreateAsyncMenuAction(string header, string category, string error, Func<Task> action)
+    {
+        var item = new MenuItem { Header = header };
+        item.Click += async (_, _) =>
+        {
+            try { await action(); }
+            catch (Exception ex) { HandleUiActionError(category, error, ex); }
+        };
+        return item;
+    }
+
+    private static void ShowListContextMenu(ContextMenu menu, ListBox list)
+    {
+        menu.PlacementTarget = list;
         menu.Placement = PlacementMode.MousePoint;
         menu.IsOpen = true;
     }

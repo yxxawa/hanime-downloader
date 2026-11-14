@@ -12,7 +12,7 @@ using Hanime1Downloader.CSharp.Models;
 using Hanime1Downloader.CSharp.Services;
 using Hanime1Downloader.CSharp.Views;
 
-internal static class Program
+internal static partial class Program
 {
     private static int _passes;
     private static readonly DateTime Time = new(2026, 11, 1, 12, 34, 56);
@@ -156,6 +156,7 @@ internal static class Program
         var savedSettings = JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(dialog.Settings))!;
         Check(savedSettings.FileNamingRule == savedRule, "custom default rule survives settings JSON persistence");
         dialog.Close(); queueDialog.Close(); batch.Close();
+        CheckSettingsWorkflow(app);
         app.Shutdown();
     }
     private static void Capture(FrameworkElement element, string path, int width, int height)

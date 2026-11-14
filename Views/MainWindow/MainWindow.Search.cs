@@ -299,8 +299,6 @@ public partial class MainWindow
 
     private async Task SearchAsync(int page, bool isRetry = false)
     {
-        if (_apiClient is null) InitSessionWithoutCf();
-
         _isSearching = true;
         SearchButton.IsEnabled = false;
         PreviousPageButton.IsEnabled = false;
@@ -310,7 +308,9 @@ public partial class MainWindow
 
         try
         {
-            await StopStartupSessionRestoreAsync();
+            await StopBackgroundSessionWorkAsync();
+            if (_isWindowClosing) return;
+            if (_apiClient is null) InitSessionWithoutCf();
             var apiClient = _apiClient;
             if (apiClient is null)
             {
@@ -340,7 +340,7 @@ public partial class MainWindow
         }
         catch (Exception ex) when (IsCloudflareSessionError(ex))
         {
-            var restored = await EnsureVerifiedSessionAsync("检测到 Cloudflare 会话失效，正在自动打开验证窗口...", requestUrl: RecoveryRequestUrl(ex));
+            var restored = await EnsureVerifiedSessionAsync("检测到 Cloudflare 会话失效，正在自动打开验证窗口...", failure: ex);
             if (restored && !isRetry)
             {
                 await SearchAsync(page, isRetry: true);

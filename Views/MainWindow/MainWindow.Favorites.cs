@@ -288,20 +288,20 @@ public partial class MainWindow
 
     private void ExportFavoritesButton_OnClick(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button button)
+        if (_favoriteFolders.Count == 0)
+        {
+            StatusText.Text = "没有可导出的收藏夹。";
+            return;
+        }
+        if (sender is not Button button || _favoriteFolders.Count == 1)
         {
             ExportFavorites(currentFolderOnly: true);
             return;
         }
 
         var menu = new ContextMenu();
-        var exportCurrentItem = new MenuItem { Header = "导出当前收藏夹" };
-        exportCurrentItem.Click += (_, _) => ExportFavorites(currentFolderOnly: true);
-        menu.Items.Add(exportCurrentItem);
-
-        var exportAllItem = new MenuItem { Header = "导出全部收藏夹" };
-        exportAllItem.Click += (_, _) => ExportFavorites(currentFolderOnly: false);
-        menu.Items.Add(exportAllItem);
+        menu.Items.Add(CreateMenuAction("导出当前收藏夹", () => ExportFavorites(currentFolderOnly: true)));
+        menu.Items.Add(CreateMenuAction("导出全部收藏夹", () => ExportFavorites(currentFolderOnly: false)));
 
         menu.PlacementTarget = button;
         menu.Placement = PlacementMode.Bottom;

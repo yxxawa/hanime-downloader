@@ -28,6 +28,23 @@ public partial class MainWindow
 
     private readonly CancellationTokenSource _startupSessionCancellation = new();
     private Task<string>? _startupSessionTask;
+    private CancellationTokenSource? _cachedCookieImportCancellation;
+    private Task? _cachedCookieImportTask;
+    private SessionVerification? _sessionVerification;
+
+    private CloudflareWindow GetSessionWindow()
+    {
+        if (_cloudflareWindow is not null) return _cloudflareWindow;
+        var window = new CloudflareWindow(_settings.SiteHost) { Owner = this };
+        window.Closed += (_, _) =>
+        {
+            if (!ReferenceEquals(_cloudflareWindow, window)) return;
+            _cloudflareWindow = null;
+            _accountService = null;
+            _accountServiceSiteHost = string.Empty;
+        };
+        return _cloudflareWindow = window;
+    }
 
     private async Task<string> RestoreStartupSessionAsync(CancellationToken cancellationToken)
     {
@@ -35,12 +52,11 @@ public partial class MainWindow
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            _cloudflareWindow ??= new CloudflareWindow(_settings.SiteHost) { Owner = this };
-            _cloudflareWindow.Closed += (_, _) => _cloudflareWindow = null;
+            var browser = GetSessionWindow();
 
             // 先静默复用浏览器里现存的 Cloudflare 会话（后台通过托管挑战，不弹窗）。
             // 成功就完全不碰磁盘缓存，避免用旧 Cookie 覆盖掉仍然有效的会话。
-            var reused = await TryReuseSessionSilentlyAsync("启动时自动恢复会话", cancellationToken);
+            var reused = await TryReuseSessionSilentlyAsync(browser, "启动时自动恢复会话", cancellationToken);
 
             // 会话确实不可用时，才导入磁盘缓存里的 Cookie 再试一次。
             cancellationToken.ThrowIfCancellationRequested();
@@ -51,8 +67,8 @@ public partial class MainWindow
                 {
                     try
                     {
-                        await _cloudflareWindow.ImportCookiesAsync(cached);
-                        reused = await TryReuseSessionSilentlyAsync("导入缓存 Cookie 后自动恢复会话", cancellationToken);
+                        await browser.ImportCookiesAsync(cached, cancellationToken);
+                        reused = await TryReuseSessionSilentlyAsync(browser, "导入缓存 Cookie 后自动恢复会话", cancellationToken);
                     }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                     catch (Exception ex)
@@ -76,6 +92,10 @@ public partial class MainWindow
         {
             // 搜索或手动验证接管会话，不再导入旧 Cookie 或重置客户端。
         }
+        catch (Exception) when (cancellationToken.IsCancellationRequested)
+        {
+            // 站点切换或关闭可同时释放旧 WebView2；不要以旧错误重置新会话。
+        }
         catch (Exception ex)
         {
             HandleUiActionError("startup", "初始化失败", ex);
@@ -85,15 +105,33 @@ public partial class MainWindow
         return startupStatus;
     }
 
-    private async Task StopStartupSessionRestoreAsync()
+    private void CancelBackgroundSessionWork()
     {
         _startupSessionCancellation.Cancel();
-        if (_startupSessionTask is not null) await _startupSessionTask;
+        _cachedCookieImportCancellation?.Cancel();
+    }
+
+    private async Task StopBackgroundSessionWorkAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        CancelBackgroundSessionWork();
+        var startup = _startupSessionTask;
+        var importing = _cachedCookieImportTask;
+        if (startup is not null) await startup.WaitAsync(cancellationToken);
+        if (importing is not null) await importing.WaitAsync(cancellationToken);
+    }
+
+    private void CancelSessionOperations()
+    {
+        CancelBackgroundSessionWork();
+        var verification = _sessionVerification;
+        _sessionVerification = null;
+        verification?.Cancellation.Cancel();
     }
 
     private void InitSessionWithoutCf(IReadOnlyList<BrowserCookieRecord>? cookies = null, string? browserVersion = null)
     {
-        _cloudflareWindow ??= new CloudflareWindow(_settings.SiteHost) { Owner = this };
+        GetSessionWindow();
         var effectiveCookies = cookies ?? [];
         ReplaceHttpSession(effectiveCookies, browserVersion);
     }
@@ -112,69 +150,53 @@ public partial class MainWindow
 
     private async Task RunVerificationAsync(bool forceRefresh)
     {
-        await StopStartupSessionRestoreAsync();
-        var operationId = CreateOperationId("cfverify");
-        _cloudflareWindow ??= new CloudflareWindow(_settings.SiteHost) { Owner = this };
-        LogInfo("cloudflare", $"[{operationId}] 开始验证，会话站点={_settings.SiteHost}, forceRefresh={forceRefresh}");
-        var verified = await _cloudflareWindow.VerifyAsync(forceRefresh, showImmediately: true);
-        if (!verified || _cloudflareWindow.Cookies.Count == 0 || string.IsNullOrWhiteSpace(_cloudflareWindow.CookieHeader))
-        {
-            LogInfo("cloudflare", $"[{operationId}] 验证未拿到可用 Cookie");
+        var verified = await WaitForSharedVerificationAsync("正在打开 Cloudflare 验证窗口。", CancellationToken.None,
+            requestUrl: null, observation: null, activateExisting: true, forceRefresh: forceRefresh);
+        if (!verified && !_isWindowClosing)
             StatusText.Text = "还没有拿到可用 Cookie，请在验证窗口中完成站点验证后再继续。";
-            return;
-        }
-
-        await SyncVerifiedSessionAsync();
-        StatusText.Text = forceRefresh
-            ? $"已强制重验并同步 Cookie。当前共 {_appState.Cookies.Count} 个 Cookie。"
-            : $"已同步当前 Cloudflare 会话。当前共 {_appState.Cookies.Count} 个 Cookie。";
-        LogInfo("cloudflare", $"[{operationId}] 验证完成，Cookie={_appState.Cookies.Count}");
     }
 
-    private async Task SyncVerifiedSessionAsync()
+    private async Task<bool> SyncVerifiedSessionAsync(CloudflareWindow browser, CancellationToken cancellationToken)
     {
-        if (_cloudflareWindow is null)
-        {
-            return;
-        }
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_isWindowClosing || !ReferenceEquals(_cloudflareWindow, browser)) return false;
 
-        _appState.Cookies = _cloudflareWindow.Cookies.ToList();
-        _appState.CookieHeader = _cloudflareWindow.CookieHeader;
-        _appState.BrowserVersion = _cloudflareWindow.BrowserVersion;
-        await SaveCookieCacheAsync();
-        ReplaceHttpSession(_appState.Cookies, _appState.BrowserVersion);
+        var cookies = browser.Cookies.ToList();
+        var header = browser.CookieHeader;
+        var browserVersion = browser.BrowserVersion;
+        var cachePath = GetCookieCacheFilePath();
+        await AtomicFile.WriteAllTextAsync(cachePath, JsonSerializer.Serialize(cookies, FavoritesJsonOptions), cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_isWindowClosing || !ReferenceEquals(_cloudflareWindow, browser)) return false;
+
+        _appState.Cookies = cookies;
+        _appState.CookieHeader = header;
+        _appState.BrowserVersion = browserVersion;
+        ReplaceHttpSession(cookies, browserVersion);
         _videoDetailsCache.Clear();
         _videoDetailsInFlight.Clear();
+        return true;
     }
 
-    /// <summary>
-    /// 静默复用/恢复 Cloudflare 会话：成功则同步 Cookie 到 HttpClient，失败只记日志。
-    /// 全程不需要用户操作，验证窗口只在后台长时间无法通过时才由 CloudflareWindow 兜底弹出。
-    /// </summary>
-    private async Task<bool> TryReuseSessionSilentlyAsync(string reason, CancellationToken cancellationToken)
+    private async Task<bool> TryReuseSessionSilentlyAsync(CloudflareWindow browser, string reason, CancellationToken cancellationToken)
     {
-        if (_cloudflareWindow is null)
-        {
-            return false;
-        }
-
         try
         {
-            var reused = await _cloudflareWindow.TryReuseSessionAsync(cancellationToken);
+            var reused = await browser.TryReuseSessionAsync(cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
-            if (!reused)
+            if (!reused || !await SyncVerifiedSessionAsync(browser, cancellationToken))
             {
                 LogInfo("cloudflare", $"{reason}：浏览器会话暂不可用");
                 return false;
             }
 
-            await SyncVerifiedSessionAsync();
             LogInfo("cloudflare", $"{reason}：已自动恢复 Cloudflare 会话，无需手动验证");
             return true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             LogInfo("cloudflare", $"{reason}：自动恢复异常: {ex.Message}");
             return false;
         }
@@ -223,26 +245,41 @@ public partial class MainWindow
         }
     }
 
-    private async Task SyncCachedCookiesToBrowserAsync(IReadOnlyList<BrowserCookieRecord> cookies)
+    private Task SyncCachedCookiesToBrowserAsync(IReadOnlyList<BrowserCookieRecord> cookies)
     {
-        if (cookies.Count == 0)
-        {
-            return;
-        }
+        if (cookies.Count == 0 || _isWindowClosing) return Task.CompletedTask;
+        _cachedCookieImportCancellation?.Cancel();
+        var browser = GetSessionWindow();
+        var cancellation = new CancellationTokenSource();
+        _cachedCookieImportCancellation = cancellation;
+        return _cachedCookieImportTask = ImportCachedCookiesAsync(browser, cookies, cancellation);
+    }
 
+    private async Task ImportCachedCookiesAsync(CloudflareWindow browser, IReadOnlyList<BrowserCookieRecord> cookies,
+        CancellationTokenSource cancellation)
+    {
+        var token = cancellation.Token;
         try
         {
-            _cloudflareWindow ??= new CloudflareWindow(_settings.SiteHost) { Owner = this };
-            await _cloudflareWindow.ImportCookiesAsync(cookies);
-            _appState.Cookies = _cloudflareWindow.Cookies.ToList();
-            _appState.CookieHeader = _cloudflareWindow.CookieHeader;
-            _appState.BrowserVersion = _cloudflareWindow.BrowserVersion;
-            InitSessionWithoutCf(_appState.Cookies, _appState.BrowserVersion);
+            await browser.ImportCookiesAsync(cookies, token);
+            token.ThrowIfCancellationRequested();
+            if (!ReferenceEquals(_cloudflareWindow, browser)) return;
+
+            _appState.Cookies = browser.Cookies.ToList();
+            _appState.CookieHeader = browser.CookieHeader;
+            _appState.BrowserVersion = browser.BrowserVersion;
+            ReplaceHttpSession(_appState.Cookies, _appState.BrowserVersion);
             LogInfo("cloudflare", $"已同步 {_settings.SiteHost} 的缓存 Cookie 到浏览器会话，共 {_appState.Cookies.Count} 个");
         }
+        catch (Exception) when (token.IsCancellationRequested) { }
         catch (Exception ex)
         {
             LogError("cloudflare", $"同步 {_settings.SiteHost} 的缓存 Cookie 到浏览器会话失败", ex);
+        }
+        finally
+        {
+            if (ReferenceEquals(_cachedCookieImportCancellation, cancellation)) _cachedCookieImportCancellation = null;
+            cancellation.Dispose();
         }
     }
 
@@ -279,7 +316,7 @@ public partial class MainWindow
             await refreshGate.WaitAsync();
             try
             {
-                var match = await ResolveQueueItemSourceAsync(item);
+                var match = await ResolveQueueItemSourceAsync(item, backgroundRefresh: true);
                 if (match is not null)
                 {
                     Interlocked.Increment(ref refreshed);
@@ -326,65 +363,101 @@ public partial class MainWindow
                string.Equals(uri.Host, $"www.{_settings.SiteHost}", StringComparison.OrdinalIgnoreCase);
     }
 
-    private readonly VerificationRequestSet _verificationRequests = new();
+    private sealed class SessionVerification
+    {
+        public readonly CancellationTokenSource Cancellation = new();
+        public readonly VerificationRequestSet Requests = new();
+        public readonly TaskCompletionSource<bool> Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int WaiterCount;
+    }
 
-    private static string? RecoveryRequestUrl(Exception exception) =>
-        (exception as CloudflareChallengeException)?.RequestUrl;
+    private Task<bool> EnsureVerifiedSessionAsync(string reason, CancellationToken cancellationToken = default,
+        Exception? failure = null, string? fallbackRequestUrl = null)
+    {
+        var challenge = failure as CloudflareChallengeException;
+        return WaitForSharedVerificationAsync(reason, cancellationToken, challenge?.RequestUrl ?? fallbackRequestUrl, challenge?.Observation);
+    }
 
-    private async Task<bool> EnsureVerifiedSessionAsync(string reason, CancellationToken cancellationToken = default, string? requestUrl = null)
+    private async Task<bool> WaitForSharedVerificationAsync(string reason, CancellationToken cancellationToken, string? requestUrl,
+        CloudflareChallengeObservation? observation, bool activateExisting = false, bool forceRefresh = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        await StopStartupSessionRestoreAsync();
-        cancellationToken.ThrowIfCancellationRequested();
-        if (_sessionRecoveryTask is null) _verificationRequests.Clear();
-        _verificationRequests.Add(requestUrl);
-        var operationId = CreateOperationId("cfrecover");
-        if (_sessionRecoveryTask is not null)
-        {
-            _cloudflareWindow?.ShowForManualVerification("检测到会话失效，请在此窗口完成 Cloudflare 验证。");
-            LogInfoThrottled("cloudflare", $"[{operationId}] 复用进行中的会话恢复任务", TimeSpan.FromSeconds(5));
-            return await _sessionRecoveryTask.WaitAsync(cancellationToken);
-        }
+        if (_isWindowClosing) return false;
 
-        var recoveryTask = EnsureVerifiedSessionCoreAsync(reason, operationId, cancellationToken, requestUrl);
-        _sessionRecoveryTask = recoveryTask;
+        var startNew = _sessionVerification is null;
+        var verification = _sessionVerification ??= new SessionVerification();
+        verification.Requests.Add(requestUrl);
+        verification.WaiterCount++;
         try
         {
-            return await recoveryTask.WaitAsync(cancellationToken);
+            if (startNew)
+                _ = RunSharedVerificationAsync(verification, reason, requestUrl, observation, forceRefresh);
+            else if (activateExisting && _cloudflareWindow is { IsVisible: true } browser)
+                browser.Activate(); // Only an explicit manual click may bring the existing window to the foreground.
+
+            return await verification.Completion.Task.WaitAsync(cancellationToken);
         }
         finally
         {
-            if (ReferenceEquals(_sessionRecoveryTask, recoveryTask))
+            verification.Requests.Remove(requestUrl);
+            verification.WaiterCount--;
+            if (verification.WaiterCount == 0 && !verification.Completion.Task.IsCompleted &&
+                ReferenceEquals(_sessionVerification, verification))
             {
-                _sessionRecoveryTask = null;
-                _verificationRequests.Clear();
+                _sessionVerification = null;
+                verification.Cancellation.Cancel();
             }
         }
     }
 
-    private async Task<bool> EnsureVerifiedSessionCoreAsync(string reason, string operationId, CancellationToken cancellationToken, string? requestUrl)
+    private async Task RunSharedVerificationAsync(SessionVerification verification, string reason, string? requestUrl,
+        CloudflareChallengeObservation? observation, bool forceRefresh)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        _cloudflareWindow ??= new CloudflareWindow(_settings.SiteHost) { Owner = this };
-        StatusText.Text = $"{reason} 请在弹出的窗口中完成验证。";
-        LogInfo("cloudflare", $"[{operationId}] {reason}");
-        var verified = await _cloudflareWindow.VerifyAsync(forceRefresh: false, cancellationToken, showImmediately: true,
-            confirmRecoveryAsync: token => _verificationRequests.ConfirmAsync(
-                (url, ct) => _cloudflareWindow.ProbeVerificationRequestAsync(url, ct), token),
-            isRecoveryConfirmed: () => _verificationRequests.IsConfirmed, requestUrl: requestUrl);
-        cancellationToken.ThrowIfCancellationRequested();
-        if (!verified || _cloudflareWindow.Cookies.Count == 0 || string.IsNullOrWhiteSpace(_cloudflareWindow.CookieHeader))
+        var token = verification.Cancellation.Token;
+        try
         {
-            StatusText.Text = "Cloudflare 会话恢复未完成，请回到验证窗口完成站点验证。";
-            LogInfo("cloudflare", $"[{operationId}] Cloudflare 会话恢复未完成");
-            return false;
-        }
+            var operationId = CreateOperationId("cfrecover");
+            var browser = GetSessionWindow();
+            StatusText.Text = $"{reason} 请在弹出的窗口中完成验证。";
+            LogInfo("cloudflare", $"[{operationId}] {reason}");
+            var verified = await browser.VerifyAsync(forceRefresh, token, showImmediately: true,
+                confirmRecoveryAsync: ct => verification.Requests.ConfirmAsync(browser.ProbeVerificationRequestAsync, ct),
+                isRecoveryConfirmed: () => verification.Requests.IsConfirmed, requestUrl: requestUrl, observation: observation,
+                prepareBrowserAsync: StopBackgroundSessionWorkAsync);
+            token.ThrowIfCancellationRequested();
 
-        await SyncVerifiedSessionAsync();
-        cancellationToken.ThrowIfCancellationRequested();
-        StatusText.Text = $"Cloudflare 会话已恢复，当前共 {_appState.Cookies.Count} 个 Cookie。";
-        LogInfo("cloudflare", $"[{operationId}] Cloudflare 会话已恢复，Cookie 数量 {_appState.Cookies.Count}");
-        _ = RefreshQueueUrlsAfterSessionRestoreAsync();
-        return true;
+            if (!verified || browser.Cookies.Count == 0 || string.IsNullOrWhiteSpace(browser.CookieHeader) ||
+                !await SyncVerifiedSessionAsync(browser, token))
+            {
+                StatusText.Text = "Cloudflare 会话恢复未完成，请完成站点验证后再试。";
+                LogInfo("cloudflare", $"[{operationId}] Cloudflare 会话恢复未完成");
+                verification.Completion.TrySetResult(false);
+                return;
+            }
+
+            StatusText.Text = $"Cloudflare 会话已恢复，当前共 {_appState.Cookies.Count} 个 Cookie。";
+            LogInfo("cloudflare", $"[{operationId}] Cloudflare 会话已恢复，Cookie 数量 {_appState.Cookies.Count}");
+            verification.Completion.TrySetResult(true);
+            var recoveredClient = _apiClient;
+            _ = Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+            {
+                if (!_isWindowClosing && ReferenceEquals(recoveredClient, _apiClient))
+                    _ = RefreshQueueUrlsAfterSessionRestoreAsync();
+            }));
+        }
+        catch (Exception) when (token.IsCancellationRequested)
+        {
+            verification.Completion.TrySetResult(false);
+        }
+        catch (Exception ex)
+        {
+            verification.Completion.TrySetException(ex);
+            _ = verification.Completion.Task.Exception;
+        }
+        finally
+        {
+            if (ReferenceEquals(_sessionVerification, verification)) _sessionVerification = null;
+            verification.Cancellation.Dispose();
+        }
     }
 }

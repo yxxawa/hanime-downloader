@@ -90,50 +90,33 @@ public partial class MainWindow
 
     private void HistoryList_OnMouseRightButtonUp(object sender, MouseButtonEventArgs e)
     {
-        var selectedHistoryItems = HistoryList.SelectedItems.Cast<DownloadHistoryItem>().ToList();
-        if (selectedHistoryItems.Count == 0)
-        {
-            return;
-        }
+        if (GetListBoxItemAt(HistoryList, e.GetPosition(HistoryList))?.DataContext is not DownloadHistoryItem) return;
+        var items = HistoryList.SelectedItems.OfType<DownloadHistoryItem>().ToList();
+        if (items.Count == 0) return;
+        ShowListContextMenu(BuildHistoryContextMenu(items), HistoryList);
+    }
 
+    private ContextMenu BuildHistoryContextMenu(IReadOnlyList<DownloadHistoryItem> items)
+    {
         var menu = new ContextMenu();
-        var viewItem = new MenuItem { Header = "查看信息" };
-        viewItem.Click += async (_, _) =>
+        if (items.Count == 1)
         {
-            try
-            {
-                await LoadHistoryItemDetailsAsync(selectedHistoryItems[0]);
-            }
-            catch (Exception ex)
-            {
-                HandleUiActionError("history", "读取历史详情失败", ex);
-            }
-        };
-        menu.Items.Add(viewItem);
+            menu.Items.Add(CreateMenuAction("打开所在文件夹", () => OpenHistoryItemFolder(items[0])));
+            menu.Items.Add(new Separator());
+        }
+        menu.Items.Add(CreateAsyncMenuAction(items.Count == 1 ? "移除历史记录" : $"移除 {items.Count} 条历史记录",
+            "history", "移除历史记录失败", () => RemoveHistoryRecordsAsync(items)));
+        return menu;
+    }
 
-        var openFolderItem = new MenuItem { Header = "打开所在目录" };
-        openFolderItem.Click += (_, _) => OpenHistoryItemFolder(selectedHistoryItems[0]);
-        menu.Items.Add(openFolderItem);
-
-        menu.Items.Add(new Separator());
-        var deleteItem = new MenuItem { Header = "删除该条" };
-        deleteItem.Click += async (_, _) =>
-        {
-            foreach (var item in selectedHistoryItems.ToList())
-            {
-                _historyItems.Remove(item);
-            }
-            RebuildHistoryVideoIds();
-            await TrySaveDownloadHistoryAsync("history", "保存下载历史失败");
-            RefreshHistoryView();
-            RefreshDownloadedFlags();
-            StatusText.Text = $"已删除 {selectedHistoryItems.Count} 条历史记录。";
-        };
-        menu.Items.Add(deleteItem);
-
-        menu.PlacementTarget = HistoryList;
-        menu.Placement = PlacementMode.MousePoint;
-        menu.IsOpen = true;
+    private async Task RemoveHistoryRecordsAsync(IReadOnlyList<DownloadHistoryItem> items)
+    {
+        foreach (var item in items) _historyItems.Remove(item);
+        RebuildHistoryVideoIds();
+        var saved = await TrySaveDownloadHistoryAsync("history", "保存下载历史失败");
+        RefreshHistoryView();
+        RefreshDownloadedFlags();
+        StatusText.Text = saved ? $"已移除 {items.Count} 条历史记录，下载文件未删除。" : "已移除历史记录，但保存失败。";
     }
 
     private void LoadDownloadHistory()

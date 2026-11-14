@@ -2,129 +2,125 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:Hanime1Downloader.CSharp.Views"
-        Title="设置"
-        Width="600"
-        Height="640"
-        MinWidth="560"
-        MinHeight="540"
-        ResizeMode="CanResize"
-        WindowStartupLocation="CenterOwner"
-        ShowInTaskbar="False"
-        UseLayoutRounding="True"
-        SnapsToDevicePixels="True"
-        Background="{DynamicResource ThemeDialogBackgroundBrush}">
+        Title="设置" Width="824" Height="664" MinWidth="660" MinHeight="520"
+        ResizeMode="CanResize" WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        UseLayoutRounding="True" SnapsToDevicePixels="True"
+        Background="{DynamicResource ThemeDialogBackgroundBrush}"
+        Foreground="{DynamicResource ThemeTextBrush}">
     <Window.Resources>
-        <Style x:Key="RowLabelStyle" TargetType="TextBlock">
-            <Setter Property="Width" Value="118"/>
-            <Setter Property="FontSize" Value="12"/>
-            <Setter Property="VerticalAlignment" Value="Center"/>
+        <Style x:Key="PageTitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="22"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextPrimaryBrush}"/>
+        </Style>
+        <Style x:Key="PageDescription" TargetType="TextBlock">
+            <Setter Property="Margin" Value="0,4,0,16"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
             <Setter Property="Foreground" Value="{DynamicResource ThemeTextSecondaryBrush}"/>
         </Style>
-        <Style x:Key="FormRowStyle" TargetType="DockPanel">
-            <Setter Property="Margin" Value="0,0,0,10"/>
-            <Setter Property="LastChildFill" Value="True"/>
-        </Style>
-        <Style x:Key="FormHintStyle" TargetType="TextBlock">
-            <Setter Property="Margin" Value="118,0,0,10"/>
-            <Setter Property="FontSize" Value="11"/>
+        <Style x:Key="HelpText" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12"/>
             <Setter Property="TextWrapping" Value="Wrap"/>
             <Setter Property="Foreground" Value="{DynamicResource ThemeTextMutedBrush}"/>
         </Style>
-        <Style x:Key="FormCheckBoxStyle" TargetType="CheckBox">
-            <Setter Property="Margin" Value="0,0,0,10"/>
-            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Style x:Key="FieldLabel" TargetType="Label">
+            <Setter Property="Padding" Value="0,0,10,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeTextSecondaryBrush}"/>
         </Style>
-
-        <Style x:Key="DialogButtonStyle" TargetType="Button">
-            <Setter Property="Height" Value="32"/>
-            <Setter Property="Padding" Value="14,0"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Background" Value="{DynamicResource ThemeButtonBackgroundBrush}"/>
-            <Setter Property="BorderBrush" Value="{DynamicResource ThemeButtonBorderBrush}"/>
-            <Setter Property="Foreground" Value="{DynamicResource ThemeButtonForegroundBrush}"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="ButtonBorder"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="4">
-                            <ContentPresenter HorizontalAlignment="Center"
-                                              VerticalAlignment="Center"
-                                              Margin="{TemplateBinding Padding}"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.88"/>
-                            </Trigger>
-                            <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.72"/>
-                            </Trigger>
-                            <Trigger Property="IsEnabled" Value="False">
-                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.5"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <!-- 卡片式分组：标题条 + 内容区 -->
-        <Style x:Key="SectionGroupStyle" TargetType="GroupBox">
+        <Style x:Key="SettingCard" TargetType="GroupBox">
             <Setter Property="Margin" Value="0,0,0,12"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="GroupBox">
-                        <Border Background="{DynamicResource ThemeSurfaceBrush}"
-                                BorderBrush="{DynamicResource ThemeBorderBrush}"
-                                BorderThickness="1"
-                                CornerRadius="6">
+                        <Border Padding="16,12,16,14" CornerRadius="8" BorderThickness="1"
+                                Background="{DynamicResource ThemeSurfaceBrush}"
+                                BorderBrush="{DynamicResource ThemeBorderBrush}">
                             <StackPanel>
-                                <Border Padding="12,8"
-                                        Background="{DynamicResource ThemeSurfaceSubtleBrush}"
-                                        BorderBrush="{DynamicResource ThemeBorderSubtleBrush}"
-                                        BorderThickness="0,0,0,1"
-                                        CornerRadius="5,5,0,0">
-                                    <TextBlock Text="{TemplateBinding Header}"
-                                               FontSize="12"
-                                               FontWeight="SemiBold"
-                                               Foreground="{DynamicResource ThemeTextPrimaryBrush}"/>
-                                </Border>
-                                <ContentPresenter Margin="12,10,12,12"/>
+                                <TextBlock Text="{TemplateBinding Header}" Margin="0,0,0,10" FontSize="14" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource ThemeTextPrimaryBrush}"/>
+                                <ContentPresenter ContentSource="Content"/>
                             </StackPanel>
                         </Border>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
         </Style>
-
-        <Style x:Key="SettingsTabItemStyle" TargetType="TabItem">
-            <Setter Property="FontSize" Value="12"/>
-            <Setter Property="Padding" Value="14,6"/>
+        <Style x:Key="SettingsButtonStyle" TargetType="Button">
+            <Setter Property="MinHeight" Value="32"/>
+            <Setter Property="Padding" Value="12,5"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeButtonForegroundBrush}"/>
+            <Setter Property="Background" Value="{DynamicResource ThemeButtonBackgroundBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeButtonBorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="ContentTemplate">
+                <Setter.Value>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding}" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                    </DataTemplate>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Surface" Padding="{TemplateBinding Padding}" CornerRadius="5"
+                                Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource ThemeAccentBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Surface" Property="Opacity" Value="0.78"/>
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource ThemeAccentBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Surface" Property="Opacity" Value="0.48"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="PrimarySettingsButton" TargetType="Button" BasedOn="{StaticResource SettingsButtonStyle}">
+            <Setter Property="Background" Value="{DynamicResource ThemeSettingsPrimaryBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ThemeAccentForegroundBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ThemeSettingsPrimaryBrush}"/>
+        </Style>
+        <Style x:Key="SettingsPageScroll" TargetType="ScrollViewer">
+            <Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
+            <Setter Property="HorizontalScrollBarVisibility" Value="Disabled"/>
+            <Setter Property="Padding" Value="22,18,18,8"/>
+        </Style>
+        <Style x:Key="SettingsNavItem" TargetType="TabItem">
             <Setter Property="Foreground" Value="{DynamicResource ThemeTextSecondaryBrush}"/>
+            <Setter Property="FontSize" Value="13"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TabItem">
-                        <Border x:Name="TabBorder"
-                                Margin="0,0,3,0"
-                                Padding="{TemplateBinding Padding}"
-                                Background="{DynamicResource ThemeSurfaceSubtleBrush}"
-                                BorderBrush="{DynamicResource ThemeBorderChromeBrush}"
-                                BorderThickness="1"
-                                CornerRadius="4,4,0,0">
-                            <ContentPresenter ContentSource="Header"
-                                              HorizontalAlignment="Center"
-                                              VerticalAlignment="Center"/>
+                        <Border x:Name="NavBackground" Margin="0,0,0,5" CornerRadius="6" BorderThickness="1"
+                                BorderBrush="Transparent" Background="Transparent">
+                            <Grid Height="40">
+                                <Border x:Name="NavMarker" Width="3" HorizontalAlignment="Left" Margin="1,8,0,8" CornerRadius="1.5"/>
+                                <ContentPresenter ContentSource="Header" VerticalAlignment="Center" Margin="12,0,8,0"
+                                                  RecognizesAccessKey="True"/>
+                            </Grid>
                         </Border>
                         <ControlTemplate.Triggers>
-                            <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="TabBorder" Property="Background" Value="{DynamicResource ThemeSurfaceBrush}"/>
-                                <Setter TargetName="TabBorder" Property="BorderBrush" Value="{DynamicResource ThemeAccentBrush}"/>
-                                <Setter Property="Foreground" Value="{DynamicResource ThemeTextBrush}"/>
-                            </Trigger>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="TabBorder" Property="BorderBrush" Value="{DynamicResource ThemeBorderStrongBrush}"/>
+                                <Setter TargetName="NavBackground" Property="Background" Value="{DynamicResource ThemeSurfaceHoverBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="NavBackground" Property="Background" Value="{DynamicResource ThemeSelectionBrush}"/>
+                                <Setter TargetName="NavMarker" Property="Background" Value="{DynamicResource ThemeAccentBrush}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource ThemeTextPrimaryBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="NavBackground" Property="BorderBrush" Value="{DynamicResource ThemeAccentBrush}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -133,278 +129,226 @@
         </Style>
     </Window.Resources>
 
-    <Grid Margin="14,14,14,0">
+    <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
+        <TabControl x:Name="SettingsPages" TabStripPlacement="Left" ItemContainerStyle="{StaticResource SettingsNavItem}"
+                    SelectionChanged="SettingsPages_OnSelectionChanged">
+            <TabControl.Template>
+                <ControlTemplate TargetType="TabControl">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="156"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Background="{DynamicResource ThemeSurfaceSubtleBrush}" BorderBrush="{DynamicResource ThemeBorderBrush}" BorderThickness="0,0,1,0">
+                            <StackPanel Margin="12,18,12,12">
+                                <TextBlock Text="设置" Margin="10,0,0,2" FontSize="20" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource ThemeTextPrimaryBrush}"/>
+                                <TextBlock Text="偏好与管理" Margin="10,0,0,18" Style="{StaticResource HelpText}"/>
+                                <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                            </StackPanel>
+                        </Border>
+                        <ContentPresenter x:Name="PART_SelectedContentHost" Grid.Column="1" ContentSource="SelectedContent"/>
+                    </Grid>
+                </ControlTemplate>
+            </TabControl.Template>
 
-        <StackPanel Grid.Row="0" Margin="2,0,2,12">
-            <TextBlock Text="设置"
-                       FontSize="18"
-                       FontWeight="SemiBold"
-                       Foreground="{DynamicResource ThemeTextPrimaryBrush}"/>
-            <TextBlock Text="下载、界面与详情面板的偏好设置"
-                       Margin="0,4,0,0"
-                       FontSize="11"
-                       Foreground="{DynamicResource ThemeTextMutedBrush}"/>
-        </StackPanel>
-
-        <TabControl Grid.Row="1"
-                    Background="Transparent"
-                    BorderThickness="0">
-            <TabControl.Resources>
-                <Style TargetType="TabItem" BasedOn="{StaticResource SettingsTabItemStyle}"/>
-            </TabControl.Resources>
-
-            <TabItem Header="下载">
-                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="2,12,8,0">
+            <TabItem x:Name="DownloadPage" Header="下载">
+                <ScrollViewer Style="{StaticResource SettingsPageScroll}">
                     <StackPanel>
-                        <GroupBox Header="下载行为" Style="{StaticResource SectionGroupStyle}">
+                        <TextBlock Text="下载" Style="{StaticResource PageTitle}"/>
+                        <TextBlock Text="设置保存位置，以及从列表添加视频时的默认下载方式。" Style="{StaticResource PageDescription}"/>
+                        <GroupBox Header="保存位置" Style="{StaticResource SettingCard}">
                             <StackPanel>
-                                <DockPanel Style="{StaticResource FormRowStyle}">
-                                    <TextBlock Style="{StaticResource RowLabelStyle}" Text="默认画质:"/>
-                                    <ComboBox x:Name="QualityCombo" Height="30" DisplayMemberPath="Label" SelectedValuePath="Value"/>
-                                </DockPanel>
-                                <DockPanel Style="{StaticResource FormRowStyle}">
-                                    <TextBlock Style="{StaticResource RowLabelStyle}" Text="同时下载任务:"/>
-                                    <ComboBox x:Name="MaxConcurrentDownloadsCombo" Height="30" DisplayMemberPath="Label" SelectedValuePath="Value"/>
-                                </DockPanel>
-                                <DockPanel Style="{StaticResource FormRowStyle}">
-                                    <TextBlock Style="{StaticResource RowLabelStyle}" Text="失败重试次数:"/>
-                                    <ComboBox x:Name="MaxRetriesCombo" Height="30" DisplayMemberPath="Label" SelectedValuePath="Value"/>
-                                </DockPanel>
-                                <CheckBox x:Name="PersistQueueCheckBox"
-                                          Style="{StaticResource FormCheckBoxStyle}"
-                                          Margin="0,2,0,0"
-                                          Content="关闭程序后保留下载队列"/>
-                            </StackPanel>
-                        </GroupBox>
-
-                        <GroupBox Header="文件管理" Style="{StaticResource SectionGroupStyle}">
-                            <StackPanel>
-                                <DockPanel Style="{StaticResource FormRowStyle}">
-                                    <TextBlock Style="{StaticResource RowLabelStyle}" Text="保存路径:"/>
-                                    <Button DockPanel.Dock="Right"
-                                            Width="76"
-                                            Margin="8,0,0,0"
-                                            Click="BrowseButton_OnClick"
-                                            Content="浏览..."
-                                            Style="{StaticResource DialogButtonStyle}"/>
-                                    <TextBox x:Name="DownloadPathBox" Height="30" VerticalContentAlignment="Center" Padding="8,0" TextChanged="DownloadPathBox_OnTextChanged"/>
-                                </DockPanel>
-                                <TextBlock x:Name="DownloadPathHintText" Style="{StaticResource FormHintStyle}"/>
-                                <TextBlock Text="默认命名规则" Margin="0,8,0,8" FontWeight="SemiBold" Foreground="{DynamicResource ThemeTextBrush}"/>
-                                <local:NamingRuleEditor x:Name="NamingEditor"/>
-                            </StackPanel>
-                        </GroupBox>
-
-                        <GroupBox Header="站点" Style="{StaticResource SectionGroupStyle}">
-                            <StackPanel>
-                                <DockPanel Style="{StaticResource FormRowStyle}">
-                                    <TextBlock Style="{StaticResource RowLabelStyle}" Text="访问站点:"/>
-                                    <ComboBox x:Name="SiteCombo" Height="30" SelectedValuePath="Value" IsEditable="True" IsTextSearchEnabled="False" StaysOpenOnEdit="True" SelectionChanged="SiteCombo_OnSelectionChanged" LostFocus="SiteCombo_OnEditChanged" KeyUp="SiteCombo_OnEditChanged">
-                                        <ComboBox.ItemContainerStyle>
-                                            <Style TargetType="ComboBoxItem">
-                                                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                                            </Style>
-                                        </ComboBox.ItemContainerStyle>
-                                        <ComboBox.ItemTemplate>
-                                            <DataTemplate>
-                                                <Grid HorizontalAlignment="Stretch">
-                                                    <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="*"/>
-                                                        <ColumnDefinition Width="Auto"/>
-                                                    </Grid.ColumnDefinitions>
-                                                    <TextBlock VerticalAlignment="Center" Text="{Binding Label}"/>
-                                                    <Button x:Name="DeleteSiteButton"
-                                                            Grid.Column="1"
-                                                            Width="18"
-                                                            Height="18"
-                                                            Margin="6,0,0,0"
-                                                            Padding="0"
-                                                            HorizontalAlignment="Right"
-                                                            VerticalAlignment="Center"
-                                                            Visibility="Collapsed"
-                                                            Click="SiteOptionDeleteButton_OnClick"
-                                                            Tag="{Binding Value}"
-                                                            Content="×"
-                                                            FontSize="12"
-                                                            FontWeight="Bold"
-                                                            ToolTip="删除该自定义站点"/>
-                                                </Grid>
-                                                <DataTemplate.Triggers>
-                                                    <DataTrigger Binding="{Binding IsCustom}" Value="True">
-                                                        <Setter TargetName="DeleteSiteButton" Property="Visibility" Value="Visible"/>
-                                                    </DataTrigger>
-                                                </DataTemplate.Triggers>
-                                            </DataTemplate>
-                                        </ComboBox.ItemTemplate>
-                                    </ComboBox>
-                                </DockPanel>
-                                <TextBlock x:Name="SiteHintText" Style="{StaticResource FormHintStyle}" Margin="118,0,0,0"/>
-                            </StackPanel>
-                        </GroupBox>
-                    </StackPanel>
-                </ScrollViewer>
-            </TabItem>
-
-            <TabItem Header="收藏夹">
-                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="2,12,8,0">
-                    <StackPanel>
-                        <GroupBox Header="收藏夹来源" Style="{StaticResource SectionGroupStyle}">
-                            <StackPanel>
-                                <DockPanel Style="{StaticResource FormRowStyle}">
-                                    <TextBlock Style="{StaticResource RowLabelStyle}" Text="收藏夹模式:"/>
-                                    <ComboBox x:Name="FavoritesModeCombo"
-                                              Height="30"
-                                              DisplayMemberPath="Label"
-                                              SelectedValuePath="Value"
-                                              SelectionChanged="FavoritesModeCombo_OnSelectionChanged"/>
-                                </DockPanel>
-                                <StackPanel x:Name="AccountOptionsPanel">
-                                    <DockPanel Style="{StaticResource FormRowStyle}">
-                                        <TextBlock Style="{StaticResource RowLabelStyle}" Text="账号邮箱:"/>
-                                        <TextBox x:Name="AccountEmailBox"
-                                                 Height="30"
-                                                 VerticalContentAlignment="Center"
-                                                 Padding="8,0"
-                                                 TextChanged="AccountCredential_OnChanged"/>
-                                    </DockPanel>
-                                    <DockPanel Style="{StaticResource FormRowStyle}">
-                                        <TextBlock Style="{StaticResource RowLabelStyle}" Text="账号密码:"/>
-                                        <PasswordBox x:Name="AccountPasswordBox"
-                                                     Height="30"
-                                                     VerticalContentAlignment="Center"
-                                                     Padding="8,0"
-                                                     PasswordChanged="AccountCredential_OnChanged"/>
-                                    </DockPanel>
-                                    <DockPanel Style="{StaticResource FormRowStyle}" LastChildFill="False">
-                                        <TextBlock Style="{StaticResource RowLabelStyle}" Text="账号绑定:"/>
-                                        <Button x:Name="BindAccountButton"
-                                                Width="96"
-                                                Content="绑定账号"
-                                                Style="{StaticResource DialogButtonStyle}"
-                                                Click="BindAccountButton_OnClick"/>
-                                    </DockPanel>
-                                    <TextBlock x:Name="AccountStatusText" Style="{StaticResource FormHintStyle}" Margin="118,0,0,4"/>
-                                    <TextBlock Style="{StaticResource FormHintStyle}"
-                                               Text="同步账号模式会在每次启动时同步一次账号收藏夹。密码只用于绑定，不会写入配置文件；收藏与取消收藏直接调用站点接口。"/>
-                                </StackPanel>
-                            </StackPanel>
-                        </GroupBox>
-                    </StackPanel>
-                </ScrollViewer>
-            </TabItem>
-
-            <TabItem Header="界面">
-                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="2,12,8,0">
-                    <StackPanel>
-                        <GroupBox Header="显示选项" Style="{StaticResource SectionGroupStyle}">
-                            <StackPanel>
-                                <DockPanel Style="{StaticResource FormRowStyle}">
-                                    <TextBlock Style="{StaticResource RowLabelStyle}" Text="界面主题:"/>
-                                    <ComboBox x:Name="ThemeModeCombo" Height="30" DisplayMemberPath="Label" SelectedValuePath="Value"/>
-                                </DockPanel>
-                                <CheckBox x:Name="ShowListCoversCheckBox"
-                                          Style="{StaticResource FormCheckBoxStyle}"
-                                          Content="在列表中显示视频封面"/>
-                                <CheckBox x:Name="LargeSearchResultCoversCheckBox"
-                                          Style="{StaticResource FormCheckBoxStyle}"
-                                          Content="放大搜索结果封面（160×90）"
-                                          ToolTip="仅在开启“在列表中显示视频封面”后生效"
-                                          IsEnabled="{Binding IsChecked, ElementName=ShowListCoversCheckBox}"/>
-                            </StackPanel>
-                        </GroupBox>
-
-                        <GroupBox Header="关于" Style="{StaticResource SectionGroupStyle}">
-                            <StackPanel>
-                                <DockPanel Style="{StaticResource FormRowStyle}">
-                                    <TextBlock Style="{StaticResource RowLabelStyle}" Text="当前版本:"/>
-                                    <TextBlock x:Name="VersionText"
-                                               VerticalAlignment="Center"
-                                               FontSize="12"
-                                               Foreground="{DynamicResource ThemeTextBrush}"/>
-                                </DockPanel>
-                                <DockPanel LastChildFill="True">
-                                    <TextBlock Style="{StaticResource RowLabelStyle}" Text="版本更新:"/>
-                                    <StackPanel Orientation="Horizontal">
-                                        <Button x:Name="CheckUpdateButton"
-                                                Width="96"
-                                                Content="检查更新"
-                                                Click="CheckUpdateButton_OnClick"
-                                                Style="{StaticResource DialogButtonStyle}"/>
-                                        <TextBlock x:Name="UpdateStatusText"
-                                                   Margin="10,0,0,0"
-                                                   VerticalAlignment="Center"
-                                                   FontSize="11"
-                                                   TextWrapping="Wrap"
-                                                   Foreground="{DynamicResource ThemeTextMutedBrush}"/>
+                                <TextBox x:Name="DownloadPathBox" MinHeight="32" Padding="8,0" VerticalContentAlignment="Center"
+                                         ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" AutomationProperties.Name="下载目录"
+                                         TextChanged="DownloadPathBox_OnTextChanged"/>
+                                <Grid Margin="0,8,0,0">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <TextBlock x:Name="DownloadPathHintText" Style="{StaticResource HelpText}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
+                                        <Button Content="选择文件夹…" Click="BrowseButton_OnClick" Style="{StaticResource SettingsButtonStyle}"/>
+                                        <Button Content="恢复默认" Margin="6,0,0,0" Click="ResetDownloadPath_OnClick" Style="{StaticResource SettingsButtonStyle}"/>
                                     </StackPanel>
-                                </DockPanel>
+                                </Grid>
+                            </StackPanel>
+                        </GroupBox>
+                        <GroupBox Header="下载偏好" Style="{StaticResource SettingCard}">
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="144"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                                <Label Content="默认画质" Target="{Binding ElementName=QualityCombo}" Style="{StaticResource FieldLabel}"/>
+                                <ComboBox x:Name="QualityCombo" Grid.Column="1" MinHeight="31" Margin="0,0,0,8" DisplayMemberPath="Label" SelectedValuePath="Value"/>
+                                <Label Grid.Row="1" Content="同时下载数" Target="{Binding ElementName=MaxConcurrentDownloadsCombo}" Style="{StaticResource FieldLabel}"/>
+                                <ComboBox x:Name="MaxConcurrentDownloadsCombo" Grid.Row="1" Grid.Column="1" MinHeight="31" Margin="0,0,0,8" DisplayMemberPath="Label" SelectedValuePath="Value"/>
+                                <Label Grid.Row="2" Content="失败后重试次数" Target="{Binding ElementName=MaxRetriesCombo}" Style="{StaticResource FieldLabel}"/>
+                                <ComboBox x:Name="MaxRetriesCombo" Grid.Row="2" Grid.Column="1" MinHeight="31" Margin="0,0,0,8" DisplayMemberPath="Label" SelectedValuePath="Value"/>
+                                <TextBlock Grid.Row="3" Grid.Column="1" Text="重试次数不含首次尝试；选 0 表示不自动重试。" Style="{StaticResource HelpText}"/>
+                            </Grid>
+                        </GroupBox>
+                        <GroupBox Header="下载队列" Style="{StaticResource SettingCard}">
+                            <StackPanel>
+                                <CheckBox x:Name="PersistQueueCheckBox" Content="退出后保留队列"/>
+                                <TextBlock Margin="0,7,0,0" Text="关闭此选项后，下次启动不恢复队列；已下载文件不受影响。" Style="{StaticResource HelpText}"/>
                             </StackPanel>
                         </GroupBox>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
 
-            <TabItem Header="详情面板">
-                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="2,12,8,0">
+            <TabItem x:Name="NamingPage" Header="文件命名">
+                <ScrollViewer Style="{StaticResource SettingsPageScroll}">
                     <StackPanel>
-                        <GroupBox Header="详情面板显示项" Style="{StaticResource SectionGroupStyle}">
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-                                <StackPanel Grid.Column="0" Margin="0,0,10,0">
-                                    <CheckBox x:Name="ShowTitleCheckBox" Style="{StaticResource FormCheckBoxStyle}" Content="标题"/>
-                                    <CheckBox x:Name="ShowUploadDateCheckBox" Style="{StaticResource FormCheckBoxStyle}" Content="上传日期"/>
-                                    <CheckBox x:Name="ShowLikesCheckBox" Style="{StaticResource FormCheckBoxStyle}" Content="点赞"/>
-                                    <CheckBox x:Name="ShowViewsCheckBox" Style="{StaticResource FormCheckBoxStyle}" Content="观看次数"/>
+                        <TextBlock Text="文件命名" Style="{StaticResource PageTitle}"/>
+                        <TextBlock Text="默认规则用于新加入的任务。队列中已有任务可单独修改。" Style="{StaticResource PageDescription}"/>
+                        <GroupBox Header="命名规则与预览" Style="{StaticResource SettingCard}">
+                            <StackPanel>
+                                <local:NamingRuleEditor x:Name="NamingEditor"/>
+                                <Button Content="恢复默认模板" HorizontalAlignment="Left" Margin="0,12,0,0" Click="ResetNaming_OnClick" Style="{StaticResource SettingsButtonStyle}"/>
+                            </StackPanel>
+                        </GroupBox>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem x:Name="SitePage" Header="站点与收藏">
+                <ScrollViewer Style="{StaticResource SettingsPageScroll}">
+                    <StackPanel>
+                        <TextBlock Text="站点与收藏" Style="{StaticResource PageTitle}"/>
+                        <TextBlock Text="先选使用的站点，再决定收藏保存在本地还是与站点账号同步。" Style="{StaticResource PageDescription}"/>
+                        <GroupBox Header="使用的站点" Style="{StaticResource SettingCard}">
+                            <StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <ComboBox x:Name="SiteCombo" MinHeight="32" DisplayMemberPath="Label" SelectedValuePath="Value"
+                                              AutomationProperties.Name="使用的站点" SelectionChanged="SiteCombo_OnSelectionChanged"/>
+                                    <Button x:Name="RemoveCustomSiteButton" Grid.Column="1" Content="移除自定义站点" Margin="8,0,0,0"
+                                            Click="RemoveCustomSite_OnClick" IsEnabled="False" Style="{StaticResource SettingsButtonStyle}"
+                                            ToolTip="只能从列表移除自定义站点" ToolTipService.ShowOnDisabled="True"/>
+                                </Grid>
+                                <TextBlock x:Name="SiteHintText" Style="{StaticResource HelpText}" Margin="0,7,0,12"/>
+                                <Label Content="添加自定义站点" Target="{Binding ElementName=CustomSiteBox}" Style="{StaticResource FieldLabel}" Margin="0,0,0,5"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <TextBox x:Name="CustomSiteBox" MinHeight="32" Padding="8,0" VerticalContentAlignment="Center"
+                                             PreviewKeyDown="CustomSiteBox_OnPreviewKeyDown"/>
+                                    <Button x:Name="AddCustomSiteButton" Grid.Column="1" Content="添加并选中" Margin="8,0,0,0"
+                                            Click="AddCustomSite_OnClick" Style="{StaticResource SettingsButtonStyle}"/>
+                                </Grid>
+                                <TextBlock x:Name="CustomSiteFeedbackText" Margin="0,7,0,0" Text="可输入域名或粘贴完整链接，只保留域名。" Style="{StaticResource HelpText}"/>
+                            </StackPanel>
+                        </GroupBox>
+                        <GroupBox Header="收藏来源" Style="{StaticResource SettingCard}">
+                            <StackPanel>
+                                <RadioButton x:Name="FavoritesLocalRadio" GroupName="FavoritesMode" Content="本地收藏" Checked="FavoritesMode_OnChanged"/>
+                                <TextBlock Text="收藏保存在这台电脑，可建立多个收藏夹。" Margin="19,3,0,10" Style="{StaticResource HelpText}"/>
+                                <RadioButton x:Name="FavoritesAccountRadio" GroupName="FavoritesMode" Content="站点账号收藏" Checked="FavoritesMode_OnChanged"/>
+                                <TextBlock Text="与当前站点的账号同步。需先绑定账号，程序不保存密码。" Margin="19,3,0,0" Style="{StaticResource HelpText}"/>
+                            </StackPanel>
+                        </GroupBox>
+                        <GroupBox x:Name="AccountOptionsPanel" Header="账号绑定" Style="{StaticResource SettingCard}" Visibility="Collapsed">
+                            <StackPanel>
+                                <StackPanel x:Name="AccountSiteMismatchPanel" Visibility="Collapsed">
+                                    <TextBlock Text="账号绑定只适用于当前站点。切换站点时，请先保存为本地收藏，之后可在新站点重新绑定。" Style="{StaticResource HelpText}"/>
+                                    <Button Content="改用本地收藏" Click="UseLocalFavorites_OnClick" Margin="0,8,0,0" HorizontalAlignment="Left" Style="{StaticResource SettingsButtonStyle}"/>
                                 </StackPanel>
-                                <StackPanel Grid.Column="1">
-                                    <CheckBox x:Name="ShowDurationCheckBox" Style="{StaticResource FormCheckBoxStyle}" Content="时长"/>
-                                    <CheckBox x:Name="ShowTagsCheckBox" Style="{StaticResource FormCheckBoxStyle}" Content="标签"/>
-                                    <CheckBox x:Name="ShowCoverCheckBox" Style="{StaticResource FormCheckBoxStyle}" Content="封面（查看按钮）"/>
-                                    <CheckBox x:Name="ShowRelatedVideosCheckBox" Style="{StaticResource FormCheckBoxStyle}" Content="相关视频"/>
-                                </StackPanel>
-                            </Grid>
+                                <Grid x:Name="BoundAccountPanel" Visibility="Collapsed">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <TextBlock x:Name="AccountStatusText" TextWrapping="Wrap" VerticalAlignment="Center" FontWeight="SemiBold"/>
+                                    <Button x:Name="EditAccountButton" Grid.Column="1" Content="更换账号…" Click="EditAccount_OnClick" Margin="10,0,0,0" Style="{StaticResource SettingsButtonStyle}"/>
+                                </Grid>
+                                <Grid x:Name="AccountForm" Visibility="Collapsed" Margin="0,6,0,0">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="84"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                                    <Label Content="邮箱" Target="{Binding ElementName=AccountEmailBox}" Style="{StaticResource FieldLabel}"/>
+                                    <TextBox x:Name="AccountEmailBox" Grid.Column="1" MinHeight="31" Margin="0,0,0,8" Padding="8,0" VerticalContentAlignment="Center" TextChanged="AccountCredential_OnChanged"/>
+                                    <Label Grid.Row="1" Content="密码" Target="{Binding ElementName=AccountPasswordBox}" Style="{StaticResource FieldLabel}"/>
+                                    <PasswordBox x:Name="AccountPasswordBox" Grid.Row="1" Grid.Column="1" MinHeight="31" Margin="0,0,0,8" Padding="8,0" VerticalContentAlignment="Center"
+                                                 PasswordChanged="AccountCredential_OnChanged" PreviewKeyDown="AccountPasswordBox_OnPreviewKeyDown"/>
+                                    <WrapPanel Grid.Row="2" Grid.Column="1">
+                                        <Button x:Name="BindAccountButton" Content="绑定账号" Click="BindAccountButton_OnClick" Style="{StaticResource PrimarySettingsButton}"/>
+                                        <Button x:Name="CancelAccountEditButton" Content="取消更换" Margin="8,0,0,0" Click="CancelAccountEdit_OnClick" Style="{StaticResource SettingsButtonStyle}"/>
+                                    </WrapPanel>
+                                </Grid>
+                                <TextBlock x:Name="AccountFeedbackText" Margin="0,8,0,0" Style="{StaticResource HelpText}" Visibility="Collapsed"/>
+                            </StackPanel>
+                        </GroupBox>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem x:Name="AppearancePage" Header="外观与详情">
+                <ScrollViewer Style="{StaticResource SettingsPageScroll}">
+                    <StackPanel>
+                        <TextBlock Text="外观与详情" Style="{StaticResource PageTitle}"/>
+                        <TextBlock Text="选择界面主题、列表封面大小，以及详情面板要显示的信息。" Style="{StaticResource PageDescription}"/>
+                        <GroupBox Header="主题与封面" Style="{StaticResource SettingCard}">
+                            <StackPanel>
+                                <DockPanel Margin="0,0,0,12">
+                                    <Label Content="颜色主题" Width="144" Target="{Binding ElementName=ThemeModeCombo}" Style="{StaticResource FieldLabel}"/>
+                                    <ComboBox x:Name="ThemeModeCombo" MinHeight="31" DisplayMemberPath="Label" SelectedValuePath="Value"/>
+                                </DockPanel>
+                                <CheckBox x:Name="ShowListCoversCheckBox" Content="在列表中显示封面" Margin="0,0,0,8"/>
+                                <CheckBox x:Name="LargeSearchResultCoversCheckBox" Content="在搜索结果中使用大封面"
+                                          IsEnabled="{Binding IsChecked, ElementName=ShowListCoversCheckBox}" Margin="19,0,0,0"/>
+                            </StackPanel>
+                        </GroupBox>
+                        <GroupBox Header="详情面板显示项" Style="{StaticResource SettingCard}">
+                            <StackPanel>
+                                <UniformGrid Columns="2" Margin="0,0,0,9">
+                                    <CheckBox x:Name="ShowTitleCheckBox" Content="标题" Margin="0,0,0,8"/>
+                                    <CheckBox x:Name="ShowCoverCheckBox" Content="封面查看按钮" Margin="0,0,0,8"/>
+                                    <CheckBox x:Name="ShowUploadDateCheckBox" Content="上传日期" Margin="0,0,0,8"/>
+                                    <CheckBox x:Name="ShowDurationCheckBox" Content="时长" Margin="0,0,0,8"/>
+                                    <CheckBox x:Name="ShowLikesCheckBox" Content="点赞" Margin="0,0,0,8"/>
+                                    <CheckBox x:Name="ShowViewsCheckBox" Content="观看次数" Margin="0,0,0,8"/>
+                                    <CheckBox x:Name="ShowTagsCheckBox" Content="标签" Margin="0,0,0,8"/>
+                                    <CheckBox x:Name="ShowRelatedVideosCheckBox" Content="相关视频" Margin="0,0,0,8"/>
+                                </UniformGrid>
+                                <Button Content="恢复默认显示项" Click="ResetDetails_OnClick" HorizontalAlignment="Left" Style="{StaticResource SettingsButtonStyle}"/>
+                            </StackPanel>
+                        </GroupBox>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem x:Name="AboutPage" Header="关于">
+                <ScrollViewer Style="{StaticResource SettingsPageScroll}">
+                    <StackPanel>
+                        <TextBlock Text="关于" Style="{StaticResource PageTitle}"/>
+                        <TextBlock Text="查看当前版本，按需检查更新。" Style="{StaticResource PageDescription}"/>
+                        <GroupBox Header="版本与更新" Style="{StaticResource SettingCard}">
+                            <StackPanel>
+                                <TextBlock x:Name="VersionText" FontSize="18" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="UpdateStatusText" Text="检查更新不会自动打开网页。" Margin="0,6,0,10" Style="{StaticResource HelpText}"/>
+                                <WrapPanel>
+                                    <Button x:Name="CheckUpdateButton" Content="检查更新" Click="CheckUpdateButton_OnClick" Style="{StaticResource SettingsButtonStyle}"/>
+                                    <Button x:Name="OpenReleaseButton" Content="打开发布页" Click="OpenReleaseButton_OnClick" Margin="8,0,0,0"
+                                            Visibility="Collapsed" Style="{StaticResource PrimarySettingsButton}"/>
+                                </WrapPanel>
+                            </StackPanel>
                         </GroupBox>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
         </TabControl>
 
-        <Border Grid.Row="2"
-                Margin="-14,12,-14,0"
-                Padding="14,10"
-                Background="{DynamicResource ThemeSurfaceFooterBrush}"
-                BorderBrush="{DynamicResource ThemeBorderBrush}"
-                BorderThickness="0,1,0,0">
-            <DockPanel LastChildFill="False">
-                <TextBlock DockPanel.Dock="Left"
-                           VerticalAlignment="Center"
-                           FontSize="11"
-                           Foreground="{DynamicResource ThemeTextMutedBrush}"
-                           Text="修改后点击「保存设置」生效"/>
-                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                    <Button Width="104"
-                            IsDefault="True"
-                            Click="ConfirmButton_OnClick"
-                            Content="保存设置"
-                            Style="{StaticResource DialogButtonStyle}"
-                            Background="{DynamicResource ThemeAccentBrush}"
-                            Foreground="{DynamicResource ThemeAccentForegroundBrush}"
-                            BorderBrush="{DynamicResource ThemeAccentBrush}"/>
-                    <Button Width="82"
-                            Margin="8,0,0,0"
-                            IsCancel="True"
-                            Content="取消"
-                            Style="{StaticResource DialogButtonStyle}"/>
+        <Border Grid.Row="1" Padding="16,11" Background="{DynamicResource ThemeSurfaceFooterBrush}"
+                BorderBrush="{DynamicResource ThemeBorderBrush}" BorderThickness="0,1,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel VerticalAlignment="Center" Margin="0,0,12,0">
+                    <TextBlock x:Name="SettingsFeedbackText" Style="{StaticResource HelpText}" Text="保存后应用设置。"/>
                 </StackPanel>
-            </DockPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="取消" MinWidth="72" IsCancel="True" Style="{StaticResource SettingsButtonStyle}"/>
+                    <Button x:Name="SaveSettingsButton" Content="保存设置" MinWidth="96" Margin="8,0,0,0" IsDefault="True"
+                            Click="ConfirmButton_OnClick" Style="{StaticResource PrimarySettingsButton}"/>
+                </StackPanel>
+            </Grid>
         </Border>
     </Grid>
 </Window>

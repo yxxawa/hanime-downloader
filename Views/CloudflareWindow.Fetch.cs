@@ -2,6 +2,7 @@ using Hanime1Downloader.CSharp.Models;
 using Hanime1Downloader.CSharp.Services;
 using Microsoft.Web.WebView2.Core;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Threading;
@@ -15,53 +16,111 @@ public partial class CloudflareWindow
 
     public async Task<BrowserFetchResult> FetchHtmlAsync(string relativeUrl, CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync();
-        if (Browser.CoreWebView2 is null)
+        await EnsureInitializedAsync().WaitAsync(cancellationToken);
+        var core = Browser.CoreWebView2 ?? throw new InvalidOperationException("浏览器上下文尚未初始化，请先完成验证。");
+        var target = new Uri(SessionBaseUri, relativeUrl);
+        if (!_sessionContext.IsTrustedOrigin(target))
+            throw new InvalidOperationException("页面请求不属于当前站点。");
+
+        await _fetchLock.WaitAsync(cancellationToken);
+        ulong? navigationId = null;
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completed = new TaskCompletionSource<CoreWebView2NavigationCompletedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        void HandleNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs args)
         {
-            throw new InvalidOperationException("浏览器上下文尚未初始化，请先完成验证。");
+            if (navigationId is null && !args.IsRedirected && IsSameDocumentRequest(target, args.Uri))
+                navigationId = args.NavigationId;
+            else if (navigationId is not null && navigationId != args.NavigationId)
+            {
+                // 例如验证窗口接管导航。已在等待 DOM 或状态的旧请求都应停止。
+                ready.TrySetResult();
+                completed.TrySetCanceled();
+            }
         }
 
-        var targetUrl = new Uri(new Uri(_siteBaseUrl), relativeUrl).ToString();
-        await _fetchLock.WaitAsync(cancellationToken);
-        var navigationCompletionSource = new TaskCompletionSource<CoreWebView2NavigationCompletedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void HandleDomReady(object? sender, CoreWebView2DOMContentLoadedEventArgs args)
+        {
+            if (navigationId == args.NavigationId) ready.TrySetResult();
+        }
 
         void HandleNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs args)
         {
-            navigationCompletionSource.TrySetResult(args);
+            if (navigationId != args.NavigationId) return;
+            completed.TrySetResult(args);
+            ready.TrySetResult();
         }
 
-        Browser.CoreWebView2.NavigationCompleted += HandleNavigationCompleted;
+        core.NavigationStarting += HandleNavigationStarting;
+        core.DOMContentLoaded += HandleDomReady;
+        core.NavigationCompleted += HandleNavigationCompleted;
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (IsActiveVerification())
+                throw new CloudflareChallengeException("当前正在进行 Cloudflare 验证，请先完成验证。", target.AbsoluteUri);
+
             _readyDocumentNavigationId = null;
-            Browser.CoreWebView2.Navigate(targetUrl);
-            var navigation = await navigationCompletionSource.Task.WaitAsync(TimeSpan.FromSeconds(45), cancellationToken);
+            var navigationTimeout = TimeSpan.FromSeconds(45);
+            core.Navigate(target.AbsoluteUri);
+            await ready.Task.WaitAsync(navigationTimeout, cancellationToken);
+            if (navigationId is not ulong activeId)
+                throw new InvalidOperationException("未能关联当前页面导航。");
+            EnsureFetchDocumentIsCurrent(core, activeId, cancellationToken);
 
-            if (navigation.HttpStatusCode == 403)
-            {
-                throw new CloudflareChallengeException("站点返回 HTTP 403，Cloudflare 会话失效，请重新验证。", targetUrl);
-            }
+            if (completed.Task.IsCompletedSuccessfully && completed.Task.Result is { IsSuccess: false, HttpStatusCode: 0 } failed)
+                throw new InvalidOperationException($"页面导航失败: {failed.WebErrorStatus}");
 
-            await WaitForPageContentAsync(relativeUrl, cancellationToken);
-            var payload = await Browser.CoreWebView2.ExecuteScriptAsync(
-                "JSON.stringify({ status: document.documentElement ? 200 : 0, url: location.href, title: document.title, html: document.documentElement ? document.documentElement.outerHTML : '' })");
+            await WaitForPageContentAsync(core, activeId, target, relativeUrl, cancellationToken);
+            var payload = await core.ExecuteScriptAsync(
+                "JSON.stringify({ status: performance.getEntriesByType('navigation')[0]?.responseStatus ?? 0, url: location.href, title: document.title, html: document.documentElement?.outerHTML ?? '' })")
+                .WaitAsync(cancellationToken);
+            EnsureFetchDocumentIsCurrent(core, activeId, cancellationToken);
             var result = DeserializeScriptResult<BrowserFetchResult>(payload) ?? new BrowserFetchResult();
+            if (CloudflareDetection.IsChallengePage(result.Html, result.Title))
+                throw CloudflareDetection.ConfirmedChallenge(target.AbsoluteUri, new("navigation-dom", Stopwatch.GetTimestamp()));
 
-            if (!navigation.IsSuccess &&
-                navigation.WebErrorStatus != CoreWebView2WebErrorStatus.Unknown &&
-                string.IsNullOrWhiteSpace(result.Html))
+            var status = result.Status;
+            // 旧运行时可能没有 responseStatus。只有这种情况下才等待同一导航的完成事件。
+            if (status <= 0 || completed.Task.IsCompletedSuccessfully)
             {
-                throw new InvalidOperationException($"页面导航失败: {navigation.WebErrorStatus}");
+                try
+                {
+                    var navigation = await completed.Task.WaitAsync(navigationTimeout, cancellationToken);
+                    status = navigation.HttpStatusCode > 0 ? navigation.HttpStatusCode : status;
+                    if (!navigation.IsSuccess && status <= 0)
+                        throw new InvalidOperationException($"页面导航失败: {navigation.WebErrorStatus}");
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && completed.Task.IsCanceled)
+                {
+                    throw new InvalidOperationException("页面导航已切换，已忽略旧请求。");
+                }
             }
+            EnsureFetchDocumentIsCurrent(core, activeId, cancellationToken);
+            if (status == 403)
+                throw new CloudflareChallengeException("站点返回 HTTP 403，请检查当前站点会话。", target.AbsoluteUri);
 
-            return result;
+            return new BrowserFetchResult { Status = status, Url = result.Url, Title = result.Title, Html = result.Html };
         }
         finally
         {
-            Browser.CoreWebView2.NavigationCompleted -= HandleNavigationCompleted;
+            core.NavigationStarting -= HandleNavigationStarting;
+            core.DOMContentLoaded -= HandleDomReady;
+            core.NavigationCompleted -= HandleNavigationCompleted;
             _fetchLock.Release();
         }
     }
+
+    private void EnsureFetchDocumentIsCurrent(CoreWebView2 core, ulong navigationId, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_navigationId != navigationId || !Uri.TryCreate(core.Source, UriKind.Absolute, out var source) || !_sessionContext.IsTrustedOrigin(source))
+            throw new InvalidOperationException("页面已离开当前请求或当前站点，已忽略旧响应。");
+    }
+
+    private static bool IsSameDocumentRequest(Uri target, string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var actual) &&
+        Uri.Compare(target, actual, UriComponents.HttpRequestUrl, UriFormat.UriEscaped, StringComparison.Ordinal) == 0;
 
     /// <summary>
     /// 启动时静默复用浏览器里已有的 Cloudflare 会话（窗口保持隐藏）。
@@ -84,6 +143,7 @@ public partial class CloudflareWindow
             _readyDocumentNavigationId = null;
             Browser.CoreWebView2.Navigate(_siteBaseUrl);
             var reused = await WaitForClearanceAsync(SessionReuseMaxWait, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             if (reused)
             {
                 FinishButton.IsEnabled = true;
@@ -186,18 +246,21 @@ public partial class CloudflareWindow
 
     /// <summary>
     /// 在当前 WebView2 页面上下文里用 fetch() 抓取页面 HTML。
-    /// 与整页导航相比：使用真实 Chromium 的 TLS/HTTP2 指纹与同源 Cookie，不会被 Cloudflare 挑战，
-    /// 也不需要渲染 DOM（实测单页 200-320ms，可并发）。返回 null 表示当前上下文不可用，由调用方回落导航。
+    /// 无需导航或渲染 DOM；遇到明确的挑战响应头时只回传标记，不等待响应体。
+    /// 返回 null 表示当前上下文不可用，由调用方选择回退路径。
     /// </summary>
     public async Task<BrowserFetchResult?> TryFetchHtmlInPageAsync(string relativeUrl, CancellationToken cancellationToken = default, bool verifyRequest = false)
     {
-        await EnsureInitializedAsync();
+        await EnsureInitializedAsync().WaitAsync(cancellationToken);
         if (Browser.CoreWebView2 is null || !IsCurrentPageOnSite())
         {
             return null;
         }
 
-        var targetUrl = new Uri(new Uri(_siteBaseUrl), relativeUrl).ToString();
+        var target = new Uri(SessionBaseUri, relativeUrl);
+        if (!_sessionContext.IsTrustedOrigin(target)) return null;
+        var navigationId = _navigationId;
+        var targetUrl = target.AbsoluteUri;
         var urlLiteral = JsonSerializer.Serialize(targetUrl);
         var slot = "__hanimeFetch_" + Guid.NewGuid().ToString("N");
         var slotLiteral = JsonSerializer.Serialize(slot);
@@ -208,6 +271,8 @@ public partial class CloudflareWindow
             : "const t=await r.text();";
         var script =
             "(function(){(async function(){try{const r=await fetch(" + urlLiteral + ",{credentials:'include'" + cacheOption + ",headers:{'X-Requested-With':'XMLHttpRequest'}});" +
+            "const mitigation=r.headers.get('" + CloudflareDetection.ChallengeHeaderName + "');" +
+            "if(mitigation?.trim().toLowerCase()==='challenge'){chrome.webview.postMessage({slot:" + slotLiteral + ",status:r.status,url:r.url,mitigation});void r.body?.cancel().catch(()=>{});return;}" +
             readBody + "chrome.webview.postMessage({slot:" + slotLiteral + ",status:r.status,url:r.url,html:t});}" +
             "catch(e){chrome.webview.postMessage({slot:" + slotLiteral + ",status:-1,url:'',html:'',error:String(e)});}})();})();";
 
@@ -215,12 +280,28 @@ public partial class CloudflareWindow
         _scriptFetchWaiters[slot] = completion;
         try
         {
-            await Browser.CoreWebView2.ExecuteScriptAsync(script);
+            await Browser.CoreWebView2.ExecuteScriptAsync(script).WaitAsync(cancellationToken);
             var fetched = await completion.Task.WaitAsync(ScriptFetchTimeout, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             if (fetched.Status <= 0)
             {
                 AppLogger.Info("http", $"页内 fetch 失败: {relativeUrl} {fetched.Error}");
                 return null;
+            }
+
+            if (CloudflareDetection.IsChallengeHeader(fetched.Mitigation))
+            {
+                // 只接受发起此请求的同源文档及受信任站点的响应；丢弃旧页面迟到的回传。
+                if (navigationId != _navigationId || !Uri.TryCreate(fetched.MessageSource, UriKind.Absolute, out var source) ||
+                    !source.GetLeftPart(UriPartial.Authority).Equals(target.GetLeftPart(UriPartial.Authority), StringComparison.OrdinalIgnoreCase) ||
+                    !Uri.TryCreate(fetched.Url, UriKind.Absolute, out var effective) || !_sessionContext.IsTrustedOrigin(effective))
+                    return null;
+
+                return new BrowserFetchResult
+                {
+                    Status = fetched.Status, Url = effective.AbsoluteUri,
+                    Challenge = new("browser-fetch-headers", Stopwatch.GetTimestamp(), fetched.ReceivedAt)
+                };
             }
 
             return new BrowserFetchResult
@@ -316,9 +397,12 @@ public partial class CloudflareWindow
     {
         try
         {
+            var receivedAt = Stopwatch.GetTimestamp();
             var payload = JsonSerializer.Deserialize<ScriptFetchPayload>(e.WebMessageAsJson, ScriptJsonOptions);
             if (payload?.Slot is { Length: > 0 } slot && _scriptFetchWaiters.TryRemove(slot, out var completion))
             {
+                payload.ReceivedAt = receivedAt;
+                payload.MessageSource = e.Source;
                 completion.TrySetResult(payload);
             }
         }
@@ -333,8 +417,8 @@ public partial class CloudflareWindow
     /// </summary>
     public async Task<bool> TryRecoverPageContextAsync(CancellationToken cancellationToken = default)
     {
-        await EnsureInitializedAsync();
-        if (Browser.CoreWebView2 is null)
+        await EnsureInitializedAsync().WaitAsync(cancellationToken);
+        if (Browser.CoreWebView2 is null || IsActiveVerification())
         {
             return false;
         }
@@ -347,6 +431,7 @@ public partial class CloudflareWindow
         await _fetchLock.WaitAsync(cancellationToken);
         try
         {
+            if (IsActiveVerification()) return false;
             AppLogger.Info("http", $"WebView2 页面不在站点上，导航回首页恢复页内 fetch 上下文: {Browser.CoreWebView2.Source}");
             _readyDocumentNavigationId = null;
             Browser.CoreWebView2.Navigate(_siteBaseUrl);

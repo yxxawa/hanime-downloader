@@ -1355,6 +1355,7 @@
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
                                         </Grid.RowDefinitions>
 
                                         <DockPanel Grid.Row="0" LastChildFill="True" Margin="0,0,0,1">
@@ -1369,7 +1370,7 @@
                                                            Foreground="{DynamicResource ThemeBadgeInfoTextBrush}"
                                                            FontSize="10"/>
                                             </Border>
-                                            <TextBlock Text="{Binding Title}"
+                                            <TextBlock Text="{Binding Title}" ToolTip="{Binding Title}"
                                                        MinWidth="0"
                                                        VerticalAlignment="Center"
                                                        Foreground="{DynamicResource ThemeTextBrush}"
@@ -1410,7 +1411,22 @@
                                                    TextWrapping="NoWrap"
                                                    TextTrimming="CharacterEllipsis"/>
 
-                                        <ProgressBar Grid.Row="3"
+                                        <TextBlock Grid.Row="3" Margin="0,2,0,0" FontSize="10"
+                                                   Text="{Binding PlannedFileName, StringFormat=文件名：{0}}"
+                                                   ToolTip="{Binding TargetPath}" TextTrimming="CharacterEllipsis">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="{DynamicResource ThemeTextSecondaryBrush}"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding PlannedFileName}" Value="">
+                                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+
+                                        <ProgressBar Grid.Row="4"
                                                      Height="4"
                                                      Margin="0,3,0,0"
                                                      Minimum="0"

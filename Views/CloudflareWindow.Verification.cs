@@ -2,6 +2,7 @@ using Hanime1Downloader.CSharp.Models;
 using Hanime1Downloader.CSharp.Services;
 using Microsoft.Web.WebView2.Core;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Threading;
@@ -16,7 +17,8 @@ public partial class CloudflareWindow
     /// <summary>Auto-complete after request recovery, or let the user finish after the browser page and Cookie are ready.</summary>
     public async Task<bool> VerifyAsync(bool forceRefresh = false, CancellationToken cancellationToken = default,
         bool showImmediately = false, Func<CancellationToken, Task<bool>>? confirmRecoveryAsync = null, Func<bool>? isRecoveryConfirmed = null,
-        string? requestUrl = null)
+        string? requestUrl = null, CloudflareChallengeObservation? observation = null,
+        Func<CancellationToken, Task>? prepareBrowserAsync = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         _verificationCancellation?.Cancel();
@@ -26,10 +28,12 @@ public partial class CloudflareWindow
         using var verificationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _verificationCancellation = verificationCancellation;
         var token = verificationCancellation.Token;
+        using var timing = AppLogger.IsCloudflareTimingEnabled ? new VerificationTiming(this, observation) : null;
         _confirmRecoveryAsync = confirmRecoveryAsync;
         _isRecoveryConfirmed = isRecoveryConfirmed ?? (() => true);
         _nextRecoveryCheckAt = DateTime.MinValue;
-        _autoCompleteWhenReady = true;
+        _autoCompleteWhenReady = false;
+        FinishButton.IsEnabled = false;
         using var registration = token.Register(() => Dispatcher.BeginInvoke(new Action(() =>
         {
             if (!ReferenceEquals(_verificationCompletionSource, completion) || completion.Task.IsCompleted) return;
@@ -40,12 +44,19 @@ public partial class CloudflareWindow
         })));
         try
         {
-            if (showImmediately) ShowForManualVerification("请完成 Cloudflare 验证，通过后可点击“验证完成”继续。");
-            await EnsureInitializedAsync();
+            if (showImmediately)
+            {
+                ShowForManualVerification("正在打开 Cloudflare 验证页面…");
+                timing?.WindowShown();
+            }
+            // 显示窗口优先；后台交接期间不能确认旧文档，也不启动新的导航。
+            if (prepareBrowserAsync is not null) await prepareBrowserAsync(token).WaitAsync(token);
+            await EnsureInitializedAsync().WaitAsync(token);
             token.ThrowIfCancellationRequested();
             if (completion.Task.IsCompleted) return await completion.Task;
             if (Browser.CoreWebView2 is null) { completion.TrySetResult(false); return false; }
-            if (forceRefresh) await ClearHanimeCookiesAsync();
+            if (forceRefresh) await ClearHanimeCookiesAsync(token);
+            token.ThrowIfCancellationRequested();
             FinishButton.IsEnabled = true;
             StatusText.Text = showImmediately
                 ? "请完成页面验证；通过后可点击“验证完成”，也可等待自动继续。"
@@ -54,6 +65,8 @@ public partial class CloudflareWindow
             _confirmRecoveryAsync = confirmRecoveryAsync ?? (ct => ProbeVerificationRequestAsync(target.AbsoluteUri, ct));
             _navigationPending = true;
             _readyDocumentNavigationId = null;
+            _autoCompleteWhenReady = true;
+            timing?.TrackNavigation(Browser.CoreWebView2, target);
             Browser.CoreWebView2.Navigate(target.AbsoluteUri);
             _pollTimer.Start();
             if (!showImmediately)
@@ -67,10 +80,16 @@ public partial class CloudflareWindow
                 if (!IsVisible && !completion.Task.IsCompleted)
                 {
                     ShowVerificationWindow("请在此窗口完成验证，通过后可点击“验证完成”继续。");
+                    timing?.WindowShown();
                     Browser.CoreWebView2?.Reload();
                 }
             }
             return await completion.Task;
+        }
+        catch
+        {
+            if (ReferenceEquals(_verificationCompletionSource, completion) && completion.TrySetResult(false)) Hide();
+            throw;
         }
         finally
         {
@@ -85,122 +104,36 @@ public partial class CloudflareWindow
         }
     }
 
-    private async Task WaitForPageContentAsync(string relativeUrl, CancellationToken cancellationToken)
+    private async Task WaitForPageContentAsync(CoreWebView2 core, ulong navigationId, Uri target, string relativeUrl,
+        CancellationToken cancellationToken)
     {
-        if (Browser.CoreWebView2 is null)
-        {
-            return;
-        }
-
         var isWatchPage = relativeUrl.StartsWith("watch?", StringComparison.OrdinalIgnoreCase);
         var isSearchPage = relativeUrl.StartsWith("search?", StringComparison.OrdinalIgnoreCase);
         var maximumWait = isWatchPage || isSearchPage ? SearchWatchMaxWait : OtherPagesMaxWait;
-        await WaitForPageReadyAsync(relativeUrl, isWatchPage, isSearchPage, maximumWait, cancellationToken);
-    }
-
-    private async Task WaitForPageReadyAsync(string relativeUrl, bool isWatchPage, bool isSearchPage, TimeSpan maximumWait, CancellationToken cancellationToken)
-    {
-        if (Browser.CoreWebView2 is null)
-        {
-            return;
-        }
-
-        var minimumWait = TimeSpan.FromMilliseconds(isWatchPage || isSearchPage ? 35 : 15);
-        var startedAt = DateTime.UtcNow;
-        var challengeLogged = false;
-        var shownForChallenge = false;
-        var lastVisibility = string.Empty;
+        var startedAt = Stopwatch.GetTimestamp();
 
         while (true)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var payload = await Browser.CoreWebView2.ExecuteScriptAsync(
-                "JSON.stringify({ ready: document.readyState, bodyLength: document.body ? document.body.childElementCount : 0, challenge: typeof window._cf_chl_opt !== 'undefined' || (document.title || '').indexOf('Just a moment') === 0, visibility: document.visibilityState, focused: document.hasFocus(), resultLinks: document.querySelectorAll('.content-padding-new a[href], .home-rows-videos-wrapper a[href]').length })");
+            EnsureFetchDocumentIsCurrent(core, navigationId, cancellationToken);
+            var payload = await core.ExecuteScriptAsync(
+                "JSON.stringify({ ready: document.readyState, status: performance.getEntriesByType('navigation')[0]?.responseStatus ?? 0, bodyLength: document.body?.childElementCount ?? 0, challenge: typeof window._cf_chl_opt !== 'undefined' || document.title.toLowerCase().startsWith('just a moment'), resultLinks: document.querySelectorAll('.content-padding-new a[href], .home-rows-videos-wrapper a[href]').length })")
+                .WaitAsync(cancellationToken);
+            EnsureFetchDocumentIsCurrent(core, navigationId, cancellationToken);
             var state = DeserializeScriptResult<PageReadiness>(payload) ?? new PageReadiness();
-            var elapsed = DateTime.UtcNow - startedAt;
+            var elapsed = Stopwatch.GetElapsedTime(startedAt);
 
             if (state.Challenge)
-            {
-                // 搜索已确认遇到挑战：立即交给会话恢复流程显示窗口，不等待后台挑战宽限期。
-                if (isSearchPage)
-                {
-                    throw new CloudflareChallengeException("搜索遇到 Cloudflare 验证，当前会话失效，请重新验证。", new Uri(SessionBaseUri, relativeUrl).AbsoluteUri);
-                }
+                throw CloudflareDetection.ConfirmedChallenge(target.AbsoluteUri, new("navigation-dom", Stopwatch.GetTimestamp()));
 
-                if (!string.Equals(state.Visibility, lastVisibility, StringComparison.OrdinalIgnoreCase))
-                {
-                    AppLogger.Info("cloudflare", $"挑战等待中 visibility={state.Visibility}, focused={state.Focused}, IsVisible={IsVisible}, shown={shownForChallenge}");
-                    lastVisibility = state.Visibility ?? string.Empty;
-                }
-
-                // 托管挑战会自动通过并跳转到真实页面，继续等待。
-                // 实测（WebView2 152 + InitializeBrowserAsync 里的反节流启动参数）：
-                // 窗口保持隐藏时挑战同样会自动通过，典型耗时 1-4 秒；
-                // 因此这里不再为了通过挑战而弹出窗口，只有长时间未通过才显示窗口兜底。
-                if (!shownForChallenge && elapsed >= HiddenChallengeGrace)
-                {
-                    await Dispatcher.InvokeAsync(() =>
-                    {
-                        if (!IsActiveVerification() && !IsVisible)
-                        {
-                            AppLogger.Info("cloudflare", $"挑战在后台等待 {elapsed.TotalSeconds:0.0}s 仍未通过，显示验证窗口兜底");
-                            ShowVerificationWindow("自动验证未完成，请在此窗口完成 Cloudflare 验证。");
-                            shownForChallenge = true;
-                            if (Browser.CoreWebView2 is not null)
-                            {
-                                Browser.CoreWebView2.Reload();
-                            }
-                        }
-                    });
-                }
-
-                if (!challengeLogged)
-                {
-                    AppLogger.Info("cloudflare", $"等待托管挑战自动通过: {relativeUrl}（最长 {maximumWait.TotalSeconds:0} 秒）");
-                    challengeLogged = true;
-                }
-
-                if (elapsed >= maximumWait)
-                {
-                    AppLogger.Info("cloudflare", $"等待挑战超时: {relativeUrl}，elapsed={elapsed.TotalSeconds:0.0}s，返回挑战页快照交由下游处理");
-                    return;
-                }
-
-                await Task.Delay(PagePollInterval, cancellationToken);
-                continue;
-            }
-
-            if (shownForChallenge)
-            {
-                // 挑战已通过（或页面已跳离挑战页）：恢复隐藏状态。
-                await Dispatcher.InvokeAsync(() =>
-                {
-                    if (!IsActiveVerification())
-                    {
-                        Hide();
-                    }
-                });
-                shownForChallenge = false;
-            }
-
-            var pageReady = string.Equals(state.Ready, "complete", StringComparison.OrdinalIgnoreCase) && state.BodyLength > 0;
-            if (pageReady && elapsed >= minimumWait)
-            {
-                // 相关视频与结果卡片都是服务端渲染，readyState complete 时已在 DOM 中，
-                // 无需等待 related/recommend 链接出现（此前会造成无谓的延迟）。
-                var resultReady = state.ResultLinks > 0;
-                var contentReady = !isSearchPage || resultReady;
-
-                if (contentReady || elapsed >= ContentRenderGrace || (!isWatchPage && !isSearchPage))
-                {
-                    return;
-                }
-            }
+            // DOM 已就绪时不等图片；搜索无结果仍保留短暂内容宽限期。
+            if (state.Status >= 400 ||
+                (state.Ready is "interactive" or "complete" && state.BodyLength > 0 &&
+                 (!isSearchPage || state.ResultLinks > 0 || elapsed >= ContentRenderGrace)))
+                return;
 
             if (elapsed >= maximumWait)
             {
-                // 防御性兜底：页面始终未就绪时返回当前状态，沿用原有错误处理流程。
-                AppLogger.Info("cloudflare", $"等待页面内容超时: {relativeUrl}，elapsed={elapsed.TotalSeconds:0.0}s，challenge={state.Challenge}");
+                AppLogger.Info("cloudflare", $"等待页面内容超时: {relativeUrl}，elapsed={elapsed.TotalSeconds:0.0}s");
                 return;
             }
 
@@ -311,7 +244,7 @@ public partial class CloudflareWindow
     {
         var completion = _verificationCompletionSource;
         var cancellation = _verificationCancellation;
-        if (_isFinishingManually || completion is null || completion.Task.IsCompleted ||
+        if (!_autoCompleteWhenReady || _isFinishingManually || completion is null || completion.Task.IsCompleted ||
             cancellation is null || cancellation.IsCancellationRequested) return;
         var token = cancellation.Token;
         _isFinishingManually = true;

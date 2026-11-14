@@ -45,7 +45,7 @@ namespace Hanime1Downloader.CSharp.Views
         }
         private BrowserFetchResult WithRequestUrl(BrowserFetchResult response, string url) => new()
         {
-            Status = response.Status, Html = response.Html, Title = response.Title,
+            Status = response.Status, Html = response.Html, Title = response.Title, Challenge = response.Challenge,
             Url = string.IsNullOrEmpty(response.Url) ? new Uri(SessionBaseUri, url).AbsoluteUri : response.Url
         };
         public Task<BrowserFetchResult?> PostFormInPageAsync(string url, IReadOnlyDictionary<string, string> fields,

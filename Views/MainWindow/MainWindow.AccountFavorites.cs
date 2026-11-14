@@ -30,9 +30,9 @@ public partial class MainWindow
             return _accountService;
         }
 
-        _cloudflareWindow ??= new CloudflareWindow(_settings.SiteHost) { Owner = this };
+        var browser = GetSessionWindow();
         _accountServiceSiteHost = _settings.SiteHost;
-        _accountService = new HanimeAccountService(_cloudflareWindow, _settings.SiteHost);
+        _accountService = new HanimeAccountService(browser, _settings.SiteHost);
         return _accountService;
     }
 
@@ -81,9 +81,11 @@ public partial class MainWindow
 
     private async Task<HanimeAccountIdentity> BindAccountAsync(string email, string password)
     {
+        var browser = GetSessionWindow();
         var accountService = GetAccountService();
         var identity = await accountService.EnsureLoggedInAsync(email, password);
-        await SyncVerifiedSessionAsync();
+        if (!await SyncVerifiedSessionAsync(browser, CancellationToken.None))
+            throw new InvalidOperationException("站点会话已切换，请重新绑定账号。");
         return identity;
     }
 
@@ -105,13 +107,14 @@ public partial class MainWindow
         try
         {
             StatusText.Text = "正在同步账号收藏夹...";
+            var browser = GetSessionWindow();
             var accountService = GetAccountService();
             var account = await accountService.EnsureLoggedInAsync(
                 _settings.AccountEmail,
                 string.Empty);
 
             // 登录响应里的 Set-Cookie 已进入 WebView2；导出后同时更新站点 Cookie 缓存与 HttpClient。
-            await SyncVerifiedSessionAsync();
+            if (!await SyncVerifiedSessionAsync(browser, CancellationToken.None)) return;
 
             var videos = await accountService.FetchFavoriteVideosAsync(account.UserId);
             if (!IsAccountFavoritesMode ||

@@ -9,7 +9,7 @@ using Hanime1Downloader.CSharp.Views;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
 
-internal static class Program
+internal static partial class Program
 {
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
     private static int _passed;
@@ -93,7 +93,7 @@ internal static class Program
             Interlocked.Increment(ref _requests);
             var uri = new Uri(e.Request.Uri);
             if (uri.Host != _host) throw new Exception("Unexpected external request: " + uri.Host);
-            if (_holdDocument && uri.AbsolutePath == "/next-page")
+            if (_holdDocument && (uri.AbsolutePath == "/next-page" || uri.Query.Contains("query=header-fast", StringComparison.Ordinal)))
             {
                 _documentRequest = e;
                 _documentDeferral = e.GetDeferral();
@@ -103,6 +103,12 @@ internal static class Program
             {
                 _imageRequest = e;
                 _imageDeferral = e.GetDeferral();
+                return;
+            }
+            if (uri.AbsolutePath == "/header-only")
+            {
+                e.Response = _core.Environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes("<html><title>Neutral</title></html>")),
+                    200, "OK", "Content-Type: text/html\r\nCache-Control: no-store\r\nCf-Mitigated: challenge\r\n");
                 return;
             }
             var html = _challengePage
@@ -209,6 +215,8 @@ internal static class Program
         await CheckPendingDocumentAsync();
         await CheckForbiddenPageAsync();
         await CheckForbiddenPageWithPendingImageAsync();
+        await CheckHeaderFastPathAsync();
+        await CheckBusinessNavigationAsync();
         Console.WriteLine($"TOTAL: {_passed} real WPF/WebView2 assertions passed. All responses were intercepted; no live-site requests.");
     }
     private static void ReleaseImage()

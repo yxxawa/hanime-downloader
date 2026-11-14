@@ -166,6 +166,9 @@ public sealed partial class HanimeApiClient
             var inPage = await _browserWindow.TryFetchHtmlInPageAsync(relativeUrl, cancellationToken);
             if (inPage is not null)
             {
+                if (inPage.Challenge is { } challenge)
+                    throw CloudflareDetection.ConfirmedChallenge(targetUri.AbsoluteUri, challenge);
+
                 var blocked = CloudflareDetection.IsBlockedResponse(inPage);
                 AppLogger.InfoThrottled("http", $"页内 fetch 收到响应: {relativeUrl} status={inPage.Status} blocked={blocked} bytes={inPage.Html.Length} ms={pageFetchWatch.ElapsedMilliseconds}", TimeSpan.FromSeconds(3));
                 Debug.WriteLine($"[html-pagefetch] {targetUri} status={inPage.Status} bytes={inPage.Html.Length} ms={pageFetchWatch.ElapsedMilliseconds}");
@@ -181,7 +184,7 @@ public sealed partial class HanimeApiClient
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not CloudflareChallengeException)
         {
             Debug.WriteLine($"[html-pagefetch] failed: {targetUri} {ex.Message}");
         }
@@ -211,6 +214,9 @@ public sealed partial class HanimeApiClient
                 var recovered = await _browserWindow.TryFetchHtmlInPageAsync(relativeUrl, cancellationToken);
                 if (recovered is not null)
                 {
+                    if (recovered.Challenge is { } challenge)
+                        throw CloudflareDetection.ConfirmedChallenge(targetUri.AbsoluteUri, challenge);
+
                     var blocked = CloudflareDetection.IsBlockedResponse(recovered);
                     AppLogger.InfoThrottled("http", $"恢复页面上下文后页内 fetch 收到响应: {relativeUrl} status={recovered.Status} blocked={blocked}", TimeSpan.FromSeconds(3));
                     if (!blocked)
@@ -226,7 +232,7 @@ public sealed partial class HanimeApiClient
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not CloudflareChallengeException)
         {
             Debug.WriteLine($"[html-pagecontext] recover failed: {ex.Message}");
         }
@@ -273,11 +279,29 @@ public sealed partial class HanimeApiClient
                 using var requestTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 requestTimeout.CancelAfter(DirectHtmlTimeout);
                 using var response = await _httpClient!.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestTimeout.Token);
+                var headersAt = Stopwatch.GetTimestamp();
+                var responseUri = response.RequestMessage?.RequestUri ?? targetUri;
+                if (response.Headers.TryGetValues(CloudflareDetection.ChallengeHeaderName, out var mitigated) &&
+                    mitigated.Any(CloudflareDetection.IsChallengeHeader))
+                {
+                    var session = new SiteSessionContext(_siteBaseUri.Host);
+                    if (session.IsTrustedOrigin(targetUri) && session.IsTrustedOrigin(responseUri))
+                    {
+                        DisableDirectHttp();
+                        // 直连被拦截不代表浏览器也被拦截；只跳过读正文，保留浏览器恢复路径。
+                        return new BrowserFetchResult
+                        {
+                            Status = (int)response.StatusCode,
+                            Url = targetUri.AbsoluteUri,
+                            Challenge = new("http-headers", Stopwatch.GetTimestamp(), headersAt)
+                        };
+                    }
+                }
                 var html = await response.Content.ReadAsStringAsync(requestTimeout.Token);
                 var result = new BrowserFetchResult
                 {
                     Status = (int)response.StatusCode,
-                    Url = response.RequestMessage?.RequestUri?.ToString() ?? targetUri.ToString(),
+                    Url = responseUri.AbsoluteUri,
                     Html = html,
                     Title = ExtractHtmlTitle(html)
                 };
@@ -362,7 +386,7 @@ public sealed partial class HanimeApiClient
     {
         return response.Status is >= 200 and < 300 &&
                !string.IsNullOrWhiteSpace(response.Html) &&
-               !CloudflareDetection.IsChallengePage(response.Html, response.Title);
+               !CloudflareDetection.IsBlockedResponse(response);
     }
 
     /// <summary>写入 HTML 缓存并做容量控制：先清理过期项，仍超上限时按最早过期时间淘汰。</summary>
@@ -415,6 +439,9 @@ public sealed partial class HanimeApiClient
 
     private static void EnsureNotBlocked(BrowserFetchResult response)
     {
+        if (response.Challenge is { } challenge)
+            throw CloudflareDetection.ConfirmedChallenge(response.Url, challenge);
+
         var marker = CloudflareDetection.FindChallengeMarker(response.Html, response.Title);
         if (marker is not null)
         {

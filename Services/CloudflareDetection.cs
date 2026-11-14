@@ -8,13 +8,21 @@ namespace Hanime1Downloader.CSharp.Services;
 ///  1. 确定性信号：window._cf_chl_opt / 标题以 "Just a moment" 开头；
 ///  2. Cloudflare 原文标语保留为强标记；
 ///  3. 弱标记必须成对出现（challenge-form + Just a moment），避免真实页面内联脚本误判；
-///  4. 已移除：cf-challenge、cf-mitigated（响应头内容）、裸 "security verification"。
+///  4. cf-mitigated 只作为受信任来源的真实响应头使用，不匹配 HTML 里的同名文本。
 /// </summary>
 public static class CloudflareDetection
 {
+    public const string ChallengeHeaderName = "cf-mitigated";
+
+    public static bool IsChallengeHeader(string? value) =>
+        string.Equals(value?.Trim(), "challenge", StringComparison.OrdinalIgnoreCase);
+
+    internal static CloudflareChallengeException ConfirmedChallenge(string requestUrl, CloudflareChallengeObservation observation) =>
+        new("检测到 Cloudflare 挑战，请在验证窗口完成站点验证。", requestUrl, observation);
+
     /// <summary>HTTP 403 或挑战页均不能作为正常业务响应，交给浏览器恢复或验证流程。</summary>
     public static bool IsBlockedResponse(BrowserFetchResult response) =>
-        response.Status == 403 || IsChallengePage(response.Html, response.Title);
+        response.Challenge is not null || response.Status == 403 || IsChallengePage(response.Html, response.Title);
 
     public static bool IsChallengePage(string? html, string? title = null) =>
         FindChallengeMarker(html, title) is not null;

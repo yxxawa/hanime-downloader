@@ -225,8 +225,13 @@ public partial class MainWindow
         public string TargetPath
         {
             get => _targetPath;
-            set => SetField(ref _targetPath, value);
+            set
+            {
+                if (SetField(ref _targetPath, value)) OnPropertyChanged(nameof(PlannedFileName));
+            }
         }
+
+        public string PlannedFileName => Path.GetFileName(_targetPath);
 
         public bool IsDownloading
         {

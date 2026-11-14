@@ -13,7 +13,7 @@ public static class VerificationRequestPolicy
 
     public static bool IsAccepted(BrowserFetchResult? response, Uri target) =>
         response is { Status: >= 200 and < 300 } &&
-        !CloudflareDetection.IsChallengePage(response.Html, response.Title) &&
+        !CloudflareDetection.IsBlockedResponse(response) &&
         Uri.TryCreate(response.Url, UriKind.Absolute, out var actual) &&
         actual.GetLeftPart(UriPartial.Authority).Equals(target.GetLeftPart(UriPartial.Authority), StringComparison.OrdinalIgnoreCase) &&
         actual.PathAndQuery.Equals(target.PathAndQuery, StringComparison.Ordinal);

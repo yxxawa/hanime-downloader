@@ -81,9 +81,16 @@ public partial class MainWindow
                     LogInfo("download", $"队列目标路径不在下载目录内，已重新生成: {queueItem.TargetPath}; {ex.Message}");
                 }
             }
-            if (queueItem is not null && !string.Equals(queueItem.TargetPath, targetPath, StringComparison.OrdinalIgnoreCase))
+            targetPath = ChooseAvailableDownloadPath(targetPath, queueItem);
+            if (queueItem is not null)
             {
-                queueItem.TargetPath = targetPath;
+                // 路径预留独立于可编辑的队列项，移除任务后也保留到在途工作退出。
+                _activeDownloadTargets[queueItem] = targetPath;
+                if (!string.Equals(queueItem.TargetPath, targetPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    queueItem.TargetPath = targetPath;
+                    await TrySaveDownloadQueueAsync("queue", "保存下载目标路径失败");
+                }
             }
         }
         catch (Exception ex)
@@ -108,17 +115,7 @@ public partial class MainWindow
                 return false;
             }
 
-            // skip if already fully downloaded (no .tmp means not a resume)
-            if (File.Exists(targetPath) && !File.Exists(targetPath + ".tmp"))
-            {
-                if (queueItem is not null)
-                {
-                    SetQueueItemVisualState(queueItem, DownloadQueueState.Completed, "完成", "已存在", showProgress: true, progressValue: 100);
-                }
-                StatusText.Text = $"文件已存在，跳过: {targetPath}";
-                LogInfo("download", $"文件已存在，跳过: {targetPath}");
-                return true;
-            }
+            cancellationToken.ThrowIfCancellationRequested();
 
             if (queueItem is not null)
             {
@@ -129,41 +126,18 @@ public partial class MainWindow
             }
 
             // 探测链接（校验可达性 + 获取文件大小）；失败不阻塞下载。
-            long? requiredBytes = null;
+            var mediaType = source.Type;
             M3u8Playlist? preloadedPlaylist = null;
             try
             {
                 var probe = await downloadService.ProbeAsync(source.Url, cancellationToken);
-                requiredBytes = probe.ContentLength;
+                if (DownloadService.IsPlaylistMediaType(probe.ContentType)) mediaType = probe.ContentType;
                 preloadedPlaylist = probe.Playlist;
                 LogInfo("download", $"链接探测: type={probe.ContentType}, length={probe.ContentLength}, partial={probe.IsPartial}");
             }
-            catch (Exception probeEx)
+            catch (Exception probeEx) when (probeEx is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
                 LogInfo("download", $"链接探测失败，继续尝试下载: {probeEx.Message}");
-            }
-
-            // 磁盘空间预检：可用空间不足时直接失败，不留下临时文件。
-            try
-            {
-                var drive = new DriveInfo(Path.GetPathRoot(targetPath)!);
-                if (drive.IsReady && requiredBytes is > 0 &&
-                    drive.AvailableFreeSpace < requiredBytes.Value + 64L * 1024 * 1024)
-                {
-                    if (queueItem is not null)
-                    {
-                        SetQueueItemVisualState(queueItem, DownloadQueueState.Error, "失败", "磁盘空间不足");
-                        _queueRunCurrentProgress = 0;
-                        UpdateQueueRuntimeSummaryUi();
-                    }
-                    StatusText.Text = $"下载失败: 磁盘空间不足（可用 {FormatBytes(drive.AvailableFreeSpace)}，需要约 {FormatBytes(requiredBytes.Value)}）。";
-                    LogError("download", $"磁盘空间不足: {targetPath}");
-                    return false;
-                }
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                LogInfo("download", $"磁盘空间预检跳过: {ex.Message}");
             }
 
             if (queueItem is not null)
@@ -204,7 +178,7 @@ public partial class MainWindow
 
             });
 
-            await downloadService.DownloadAsync(source.Url, targetPath, progress, source.Type, cancellationToken, preloadedPlaylist, source.Quality);
+            targetPath = await downloadService.DownloadAsync(source.Url, targetPath, progress, mediaType, cancellationToken, preloadedPlaylist, source.Quality);
             if (queueItem is not null)
             {
                 SetQueueItemVisualState(queueItem, DownloadQueueState.Finalizing, "收尾", "写入历史", showProgress: true, progressValue: 100);
@@ -257,6 +231,18 @@ public partial class MainWindow
             LogInfo("download", $"下载已暂停: {targetPath}");
             return false;
         }
+        catch (InsufficientDownloadSpaceException ex)
+        {
+            if (queueItem is not null)
+            {
+                SetQueueItemVisualState(queueItem, DownloadQueueState.Error, "失败", "磁盘空间不足");
+                _queueRunCurrentProgress = 0;
+                UpdateQueueRuntimeSummaryUi();
+            }
+            StatusText.Text = $"下载失败: 磁盘空间不足（可用 {FormatBytes(ex.AvailableBytes)}，剩余下载约 {FormatBytes(ex.RemainingBytes)}，另需 64 MiB 余量）。";
+            LogError("download", $"磁盘空间不足: {targetPath}");
+            return false;
+        }
         catch (Exception ex) when (IsCloudflareSessionError(ex) && IsSiteHostUrl(source.Url))
         {
             if (queueItem is not null)
@@ -265,7 +251,7 @@ public partial class MainWindow
                 _queueRunCurrentProgress = 0;
                 UpdateQueueRuntimeSummaryUi();
             }
-            var restored = await EnsureVerifiedSessionAsync("下载过程中检测到 Cloudflare 会话失效，正在自动恢复...", cancellationToken, RecoveryRequestUrl(ex) ?? source.Url);
+            var restored = await EnsureVerifiedSessionAsync("下载过程中检测到 Cloudflare 会话失效，正在自动恢复...", cancellationToken, ex, fallbackRequestUrl: source.Url);
             if (!isRetry && restored && queueItem is not null)
             {
                 var refreshed = await ResolveQueueItemSourceAsync(queueItem, cancellationToken);
@@ -353,7 +339,7 @@ public partial class MainWindow
     private string CreateQueueTargetPath(string? title, string? type, string? videoId, int quality,
         string? namingRule = null, string? author = null, string? uploadDate = null, DateTime? namingTime = null)
     {
-        // HLS 与 MP4 都输出 MP4；先按模板建立相对路径，再执行下载根目录约束。
+        // 先生成逻辑目标路径；HLS 合并时按实际容器决定成品扩展名。
         var relativePath = DownloadNaming.BuildRelativePath(namingRule ?? _settings.FileNamingRule,
             new DownloadNamingContext(title, videoId, quality, author, uploadDate, namingTime));
         return GetDownloadTargetPath(EnsureDownloadDirectory(), relativePath);
@@ -362,6 +348,38 @@ public partial class MainWindow
     private string CreateQueueTargetPath(DownloadQueueItem item) => CreateQueueTargetPath(
         item.Title, item.Type, item.VideoId, item.Quality, item.NamingRule,
         item.NamingAuthor, item.NamingDate ?? item.UploadDate, item.NamingTime);
+
+    private bool IsDownloadPathReferenced(string path, DownloadQueueItem? except)
+    {
+        var transportStreamPath = DownloadService.GetTransportStreamOutputPath(path);
+        bool SameStem(string? other) => !string.IsNullOrWhiteSpace(other) &&
+            string.Equals(DownloadService.GetTransportStreamOutputPath(other), transportStreamPath, StringComparison.OrdinalIgnoreCase);
+        return _activeDownloadTargets.Any(pair => !ReferenceEquals(pair.Key, except) && SameStem(pair.Value)) ||
+               _downloadQueue.Any(item => !ReferenceEquals(item, except) && SameStem(item.TargetPath));
+    }
+
+    private string ChooseAvailableDownloadPath(string preferredPath, DownloadQueueItem? queueItem)
+    {
+        var directory = Path.GetDirectoryName(preferredPath)!;
+        var stem = Path.GetFileNameWithoutExtension(preferredPath);
+        var extension = Path.GetExtension(preferredPath);
+        for (var number = 1; ; number++)
+        {
+            var suffix = $" ({number})";
+            var path = number == 1 ? preferredPath : Path.Combine(directory, stem[..Math.Min(stem.Length, 180 - suffix.Length)] + suffix + extension);
+            var transportStreamPath = DownloadService.GetTransportStreamOutputPath(path);
+            var mp4Path = Path.ChangeExtension(path, ".mp4");
+            var canKeepPartial = number == 1 && string.Equals(path, queueItem?.TargetPath, StringComparison.OrdinalIgnoreCase);
+            if (!File.Exists(path) && !Directory.Exists(path) &&
+                !File.Exists(transportStreamPath) && !Directory.Exists(transportStreamPath) &&
+                !File.Exists(mp4Path) && !Directory.Exists(mp4Path) &&
+                !IsDownloadPathReferenced(path, queueItem) &&
+                (canKeepPartial || (!File.Exists(path + ".tmp") && !Directory.Exists(path + ".hls"))))
+            {
+                return path;
+            }
+        }
+    }
 
     private static string GetDownloadTargetPath(string directory, string fileName)
     {

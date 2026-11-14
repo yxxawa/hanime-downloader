@@ -5,12 +5,21 @@ namespace Hanime1Downloader.CSharp.Services;
 
 public static class AppLogger
 {
-    /// <summary>Release 版不写日志文件（不生成 app.log）；Debug 版保留，方便排查。</summary>
+    /// <summary>Debug 写常规日志；Release 默认关闭，可显式启用 Cloudflare 耗时诊断。</summary>
 #if DEBUG
     private static readonly bool FileLoggingEnabled = true;
 #else
     private static readonly bool FileLoggingEnabled = false;
 #endif
+
+    internal static bool IsCloudflareTimingEnabled { get; } = FileLoggingEnabled ||
+        string.Equals(Environment.GetEnvironmentVariable("HANIME_CF_TIMING"), "1", StringComparison.Ordinal);
+
+    internal static void CloudflareTiming(string message)
+    {
+        if (IsCloudflareTimingEnabled)
+            _ = Task.Run(() => Write("INFO", "cf-timing", message, null, enabled: true));
+    }
 
     private static readonly string AppLogPath = AppPaths.LogFile;
     private static readonly object SyncRoot = new();
@@ -57,9 +66,9 @@ public static class AppLogger
         return true;
     }
 
-    private static void Write(string level, string category, string message, Exception? exception)
+    private static void Write(string level, string category, string message, Exception? exception, bool enabled = false)
     {
-        if (!FileLoggingEnabled)
+        if (!FileLoggingEnabled && !enabled)
         {
             return;
         }
